@@ -12,6 +12,7 @@ import {
   orderBy
 } from 'firebase/firestore';
 import { db, auth } from '../firebase';
+import { handleFirestoreError, OperationType } from './useAuth';
 
 export interface Mailbox {
   id: string;
@@ -19,22 +20,29 @@ export interface Mailbox {
   address: string;
   label: string;
   project: string;
+  notes?: string;
+  targetUrl?: string;
+  webhookUrl?: string;
   status: 'active' | 'inactive';
   createdAt: any;
   lastMessageAt?: any;
 }
 
-export function useMailboxes() {
+export function useMailboxes(user: any) {
   const [mailboxes, setMailboxes] = useState<Mailbox[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!auth.currentUser) return;
+    if (!user) {
+      setMailboxes([]);
+      setLoading(false);
+      return;
+    }
 
     const q = query(
       collection(db, 'mailboxes'),
-      where('userId', '==', auth.currentUser.uid)
+      where('userId', '==', user.uid)
       // Removed orderBy temporarily to avoid index requirement issues
     );
 
@@ -62,12 +70,16 @@ export function useMailboxes() {
       if (err.message.includes('index')) {
         console.warn("Firestore Index Required: Check the console for the index creation link.");
       }
+
+      if (err.message.includes('permission')) {
+        handleFirestoreError(err, OperationType.LIST, 'mailboxes');
+      }
     });
 
     return () => unsubscribe();
-  }, []);
+  }, [user]);
 
-  const createMailbox = async (label: string, project: string) => {
+  const createMailbox = async (label: string, project: string, notes: string = '', targetUrl: string = '', webhookUrl: string = '') => {
     if (!auth.currentUser) return;
 
     // Generate a random test email address
@@ -80,12 +92,14 @@ export function useMailboxes() {
         address,
         label,
         project,
+        notes,
+        targetUrl,
+        webhookUrl,
         status: 'active',
         createdAt: serverTimestamp(),
       });
     } catch (err) {
-      console.error("Error creating mailbox:", err);
-      throw err;
+      handleFirestoreError(err, OperationType.CREATE, 'mailboxes');
     }
   };
 
@@ -96,8 +110,7 @@ export function useMailboxes() {
         status: currentStatus === 'active' ? 'inactive' : 'active'
       });
     } catch (err) {
-      console.error("Error updating status:", err);
-      throw err;
+      handleFirestoreError(err, OperationType.UPDATE, `mailboxes/${id}`);
     }
   };
 
@@ -105,8 +118,7 @@ export function useMailboxes() {
     try {
       await deleteDoc(doc(db, 'mailboxes', id));
     } catch (err) {
-      console.error("Error deleting mailbox:", err);
-      throw err;
+      handleFirestoreError(err, OperationType.DELETE, `mailboxes/${id}`);
     }
   };
 

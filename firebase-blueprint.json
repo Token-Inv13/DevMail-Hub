@@ -9,6 +9,7 @@
         "email": { "type": "string", "format": "email" },
         "displayName": { "type": "string" },
         "photoURL": { "type": "string" },
+        "apiKey": { "type": "string", "description": "API key for programmatic access" },
         "createdAt": { "type": "string", "format": "date-time" }
       },
       "required": ["uid", "email"]
@@ -23,6 +24,9 @@
         "address": { "type": "string", "format": "email" },
         "label": { "type": "string" },
         "project": { "type": "string" },
+        "notes": { "type": "string" },
+        "targetUrl": { "type": "string", "format": "uri", "description": "URL of the app to test" },
+        "webhookUrl": { "type": "string", "format": "uri", "description": "URL to trigger on new email" },
         "status": { "type": "string", "enum": ["active", "inactive"] },
         "createdAt": { "type": "string", "format": "date-time" },
         "lastMessageAt": { "type": "string", "format": "date-time" }

@@ -12,6 +12,7 @@ service cloud.firestore {
     //   - email: string (required, email format)
     //   - displayName: string (optional)
     //   - photoURL: string (optional)
+    //   - apiKey: string (optional)
     //   - createdAt: timestamp (required)
     //
     // Collection: mailboxes
@@ -22,6 +23,9 @@ service cloud.firestore {
     //   - address: string (required, email format)
     //   - label: string (optional)
     //   - project: string (optional)
+    //   - notes: string (optional)
+    //   - targetUrl: string (optional)
+    //   - webhookUrl: string (optional)
     //   - status: string (required, enum: active, inactive)
     //   - createdAt: timestamp (required)
     //   - lastMessageAt: timestamp (optional)
@@ -44,7 +48,7 @@ service cloud.firestore {
     }
 
     function isValidEmail(email) {
-      return email is string && email.matches("^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$");
+      return email is string && email.matches("^[^@]+@[^@]+\\.[^@]+$");
     }
 
     function hasOnlyAllowedFields(fields) {
@@ -55,18 +59,18 @@ service cloud.firestore {
     // Domain Validators
     // ===============================================================
     function isValidUser(data) {
-      return hasOnlyAllowedFields(['uid', 'email', 'displayName', 'photoURL', 'createdAt']) &&
+      return hasOnlyAllowedFields(['uid', 'email', 'displayName', 'photoURL', 'apiKey', 'createdAt']) &&
              data.uid == request.auth.uid &&
-             isValidEmail(data.email) &&
-             data.createdAt is timestamp;
+             (data.email == null || isValidEmail(data.email)) &&
+             (data.createdAt == null || data.createdAt is timestamp);
     }
 
     function isValidMailbox(data) {
-      return hasOnlyAllowedFields(['id', 'userId', 'address', 'label', 'project', 'status', 'createdAt', 'lastMessageAt']) &&
+      return hasOnlyAllowedFields(['id', 'userId', 'address', 'label', 'project', 'notes', 'targetUrl', 'webhookUrl', 'status', 'createdAt', 'lastMessageAt']) &&
              data.userId == request.auth.uid &&
              isValidEmail(data.address) &&
              data.status in ['active', 'inactive'] &&
-             data.createdAt is timestamp;
+             (data.createdAt == null || data.createdAt is timestamp);
     }
 
     // ===============================================================
@@ -75,8 +79,7 @@ service cloud.firestore {
 
     match /users/{userId} {
       allow read: if isOwner(userId);
-      allow create: if isOwner(userId) && isValidUser(request.resource.data);
-      allow update: if isOwner(userId) && isValidUser(request.resource.data);
+      allow create, update: if isOwner(userId) && isValidUser(request.resource.data);
     }
 
     match /mailboxes/{mailboxId} {
