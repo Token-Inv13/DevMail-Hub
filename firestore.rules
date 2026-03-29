@@ -25,10 +25,38 @@ service cloud.firestore {
     //   - project: string (optional)
     //   - notes: string (optional)
     //   - targetUrl: string (optional)
+    //   - playStoreUrl: string (optional)
+    //   - packageName: string (optional)
     //   - webhookUrl: string (optional)
     //   - status: string (required, enum: active, inactive)
+    //   - appStatus: string (optional, enum: idle, installing, installed, active)
     //   - createdAt: timestamp (required)
     //   - lastMessageAt: timestamp (optional)
+    //
+    // Collection: activities
+    // Document ID: activityId
+    // Fields:
+    //   - id: string (required)
+    //   - mailboxId: string (required)
+    //   - userId: string (required)
+    //   - type: string (required, enum: install, login, action, uninstall)
+    //   - actionName: string (optional)
+    //   - details: string (optional)
+    //   - timestamp: timestamp (required)
+    //
+    // Collection: messages
+    // Document ID: messageId
+    // Fields:
+    //   - id: string (required)
+    //   - mailboxId: string (required)
+    //   - userId: string (required)
+    //   - from: string (required)
+    //   - subject: string (required)
+    //   - body: string (optional)
+    //   - html: string (optional)
+    //   - links: list (optional)
+    //   - receivedAt: timestamp (required)
+    //   - isRead: bool (optional)
     //
     // ===============================================================
 
@@ -48,7 +76,7 @@ service cloud.firestore {
     }
 
     function isValidEmail(email) {
-      return email is string && email.matches("^[^@]+@[^@]+\\.[^@]+$");
+      return email is string && email.matches("^[a-zA-Z0-9._%+-]+@([a-zA-Z0-9-]+\\.)+[a-zA-Z]{2,10}$");
     }
 
     function hasOnlyAllowedFields(fields) {
@@ -66,11 +94,43 @@ service cloud.firestore {
     }
 
     function isValidMailbox(data) {
-      return hasOnlyAllowedFields(['id', 'userId', 'address', 'label', 'project', 'notes', 'targetUrl', 'webhookUrl', 'status', 'createdAt', 'lastMessageAt']) &&
+      return hasOnlyAllowedFields(['id', 'userId', 'address', 'label', 'project', 'notes', 'targetUrl', 'playStoreUrl', 'packageName', 'webhookUrl', 'status', 'appStatus', 'isAutoPilotEnabled', 'createdAt', 'lastMessageAt']) &&
              data.userId == request.auth.uid &&
              isValidEmail(data.address) &&
-             data.status in ['active', 'inactive'] &&
+             data.label is string &&
+             data.project is string &&
+             (data.notes == null || data.notes is string) &&
+             (data.targetUrl == null || data.targetUrl is string) &&
+             (data.playStoreUrl == null || data.playStoreUrl is string) &&
+             (data.packageName == null || data.packageName is string) &&
+             (data.webhookUrl == null || data.webhookUrl is string) &&
+             (data.status == null || data.status in ['active', 'inactive']) &&
+             (data.appStatus == null || data.appStatus in ['idle', 'installing', 'installed', 'active']) &&
+             (data.isAutoPilotEnabled == null || data.isAutoPilotEnabled is bool) &&
              (data.createdAt == null || data.createdAt is timestamp);
+    }
+
+    function isValidActivity(data) {
+      return hasOnlyAllowedFields(['id', 'mailboxId', 'userId', 'type', 'actionName', 'details', 'timestamp']) &&
+             data.userId == request.auth.uid &&
+             data.mailboxId is string &&
+             data.type in ['install', 'login', 'action', 'uninstall'] &&
+             (data.actionName == null || data.actionName is string) &&
+             (data.details == null || data.details is string) &&
+             (data.timestamp == null || data.timestamp is timestamp);
+    }
+
+    function isValidMessage(data) {
+      return hasOnlyAllowedFields(['id', 'mailboxId', 'userId', 'from', 'subject', 'body', 'html', 'links', 'receivedAt', 'isRead']) &&
+             data.userId == request.auth.uid &&
+             data.mailboxId is string &&
+             data.from is string &&
+             data.subject is string &&
+             (data.body == null || data.body is string) &&
+             (data.html == null || data.html is string) &&
+             (data.links == null || data.links is list) &&
+             (data.isRead == null || data.isRead is bool) &&
+             (data.receivedAt == null || data.receivedAt is timestamp);
     }
 
     // ===============================================================
@@ -86,6 +146,20 @@ service cloud.firestore {
       allow read: if isAuthenticated() && (resource == null || resource.data.userId == request.auth.uid);
       allow create: if isAuthenticated() && isValidMailbox(request.resource.data);
       allow update: if isDocOwner() && isValidMailbox(request.resource.data);
+      allow delete: if isDocOwner();
+    }
+
+    match /messages/{messageId} {
+      allow read: if isDocOwner();
+      allow create: if isAuthenticated() && isValidMessage(request.resource.data);
+      allow update: if isDocOwner() && isValidMessage(request.resource.data);
+      allow delete: if isDocOwner();
+    }
+
+    match /activities/{activityId} {
+      allow read: if isDocOwner();
+      allow create: if isAuthenticated() && isValidActivity(request.resource.data);
+      allow update: if isDocOwner() && isValidActivity(request.resource.data);
       allow delete: if isDocOwner();
     }
   }

@@ -3,10 +3,13 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useAuth } from './hooks/useAuth';
 import { useMailboxes, Mailbox } from './hooks/useMailboxes';
-import { auth } from './firebase';
+import { useMessages, Message } from './hooks/useMessages';
+import { useActivities, Activity } from './hooks/useActivities';
+import { auth, db } from './firebase';
+import { collection, addDoc, serverTimestamp } from 'firebase/firestore';
 import { signInWithPopup, GoogleAuthProvider, signOut } from 'firebase/auth';
 import { 
   Mail, 
@@ -24,7 +27,24 @@ import {
   Settings,
   ShieldCheck,
   Code,
-  ExternalLink
+  ExternalLink,
+  ChevronRight,
+  ArrowLeft,
+  Send,
+  UserCheck,
+  Zap,
+  Clock,
+  Eye,
+  EyeOff,
+  Smartphone,
+  Download,
+  LogIn,
+  Activity as ActivityIcon,
+  Play,
+  FileJson,
+  Share2,
+  DownloadCloud,
+  Bot
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { format } from 'date-fns';
@@ -32,19 +52,131 @@ import { cn } from './lib/utils';
 
 export default function App() {
   const { user, loading: authLoading, apiKey, rotateApiKey } = useAuth();
-  const { mailboxes, loading: mailLoading, error: mailError, createMailbox, toggleStatus, removeMailbox } = useMailboxes(user);
+  const { mailboxes, loading: mailLoading, error: mailError, createMailbox, toggleStatus, removeMailbox, updateAppStatus, toggleAutoPilot } = useMailboxes(user);
+  const [selectedMailboxId, setSelectedMailboxId] = useState<string | null>(null);
+  const { messages, loading: msgLoading, simulateMessage, markAsRead } = useMessages(selectedMailboxId);
+  const { activities, logActivity } = useActivities(selectedMailboxId);
+  const [selectedMessage, setSelectedMessage] = useState<Message | null>(null);
+  
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [newLabel, setNewLabel] = useState('');
   const [newProject, setNewProject] = useState('');
   const [newNotes, setNewNotes] = useState('');
   const [newTargetUrl, setNewTargetUrl] = useState('');
   const [newWebhookUrl, setNewWebhookUrl] = useState('');
+  const [newPlayStoreUrl, setNewPlayStoreUrl] = useState('');
+  const [newPackageName, setNewPackageName] = useState('');
+  const [newCount, setNewCount] = useState(1);
+  const [newDomain, setNewDomain] = useState('gmail-verify.com');
   const [search, setSearch] = useState('');
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [isApiModalOpen, setIsApiModalOpen] = useState(false);
   const [activeSnippet, setActiveSnippet] = useState<'curl' | 'javascript' | 'python'>('javascript');
   const [selectedProject, setSelectedProject] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<'dashboard' | 'extension' | 'settings'>('dashboard');
+  const [activeInboxTab, setActiveInboxTab] = useState<'messages' | 'simulation'>('messages');
+
+  // Auto-Pilot Logic
+  useEffect(() => {
+    const interval = setInterval(() => {
+      mailboxes.forEach(mailbox => {
+        if (mailbox.isAutoPilotEnabled && mailbox.appStatus === 'active') {
+          // 20% chance to trigger an action every minute
+          if (Math.random() < 0.2) {
+            triggerAutoPilotAction(mailbox);
+          }
+        }
+      });
+    }, 60000); // Check every minute
+
+    return () => clearInterval(interval);
+  }, [mailboxes]);
+
+  const triggerAutoPilotAction = async (mailbox: Mailbox) => {
+    const actions = [
+      { name: 'Navigation', details: 'Consultation du catalogue produit (Auto-Pilot)' },
+      { name: 'Interaction', details: 'Ajout d\'un article au panier (Auto-Pilot)' },
+      { name: 'Profil', details: 'Mise à jour des préférences utilisateur (Auto-Pilot)' },
+      { name: 'Recherche', details: 'Recherche de mots-clés spécifiques (Auto-Pilot)' }
+    ];
+    const randomAction = actions[Math.floor(Math.random() * actions.length)];
+    
+    // Log activity
+    await logActivityToMailbox(mailbox.id, 'action', randomAction.name, randomAction.details);
+    
+    // Trigger Webhook if exists
+    if (mailbox.webhookUrl) {
+      triggerWebhook(mailbox.webhookUrl, {
+        type: 'action',
+        mailboxId: mailbox.id,
+        address: mailbox.address,
+        actionName: randomAction.name,
+        details: randomAction.details,
+        timestamp: new Date().toISOString()
+      });
+    }
+  };
+
+  const triggerWebhook = async (url: string, payload: any) => {
+    try {
+      await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+    } catch (err) {
+      console.error("Webhook Error:", err);
+    }
+  };
+
+  const logActivityToMailbox = async (mailboxId: string, type: Activity['type'], name: string, details: string) => {
+    // This is a helper to log activity even if not currently selected
+    // Since useActivities is scoped to selectedMailboxId, we might need a more global way or just use the hook's method if it's the selected one
+    if (selectedMailboxId === mailboxId) {
+      await logActivity(type, name, details);
+    } else {
+      // Manual log for background auto-pilot
+      try {
+        await addDoc(collection(db, 'activities'), {
+          mailboxId,
+          userId: user?.uid,
+          type,
+          actionName: name,
+          details,
+          timestamp: serverTimestamp()
+        });
+      } catch (err) {
+        console.error("Error logging background activity:", err);
+      }
+    }
+  };
+
+  const exportActivities = () => {
+    if (activities.length === 0) return;
+    
+    const headers = ['Type', 'Action', 'Details', 'Timestamp'];
+    const rows = activities.map(a => [
+      a.type,
+      a.actionName || '',
+      a.details,
+      a.timestamp?.seconds ? new Date(a.timestamp.seconds * 1000).toISOString() : ''
+    ]);
+    
+    const csvContent = [
+      headers.join(','),
+      ...rows.map(r => r.map(cell => `"${cell}"`).join(','))
+    ].join('\n');
+    
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.setAttribute('href', url);
+    link.setAttribute('download', `activities-${selectedMailbox?.label}-${format(new Date(), 'yyyy-MM-dd')}.csv`);
+    link.style.visibility = 'hidden';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
 
   const handleLogin = () => {
     const provider = new GoogleAuthProvider();
@@ -55,12 +187,15 @@ export default function App() {
 
   const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault();
-    await createMailbox(newLabel, newProject, newNotes, newTargetUrl, newWebhookUrl);
+    await createMailbox(newLabel, newProject, newNotes, newTargetUrl, newWebhookUrl, newPlayStoreUrl, newPackageName, newCount, newDomain);
     setNewLabel('');
     setNewProject('');
     setNewNotes('');
     setNewTargetUrl('');
     setNewWebhookUrl('');
+    setNewPlayStoreUrl('');
+    setNewPackageName('');
+    setNewCount(1);
     setIsModalOpen(false);
   };
 
@@ -72,6 +207,8 @@ export default function App() {
 
   const projects = Array.from(new Set(mailboxes.map(m => m.project).filter(Boolean)));
 
+  const selectedMailbox = mailboxes.find(m => m.id === selectedMailboxId);
+
   const filteredMailboxes = mailboxes.filter(m => {
     const matchesSearch = m.address.toLowerCase().includes(search.toLowerCase()) ||
       m.label.toLowerCase().includes(search.toLowerCase()) ||
@@ -81,6 +218,101 @@ export default function App() {
     
     return matchesSearch && matchesProject;
   });
+
+  const handleSimulateScenario = async (type: 'signup' | 'reset' | 'notif') => {
+    if (!selectedMailbox) return;
+    
+    let subject = '';
+    let body = '';
+    
+    const appUrl = selectedMailbox.targetUrl || 'https://votre-app.com';
+    const token = Math.random().toString(36).substring(7);
+
+    switch(type) {
+      case 'signup':
+        subject = 'Confirmez votre inscription';
+        body = `Bonjour ! Merci de vous être inscrit sur ${selectedMailbox.project || 'notre application'}. Veuillez cliquer sur le lien ci-dessous pour confirmer votre compte : ${appUrl}/confirm?token=${token}`;
+        break;
+      case 'reset':
+        subject = 'Réinitialisation de votre mot de passe';
+        body = `Vous avez demandé la réinitialisation de votre mot de passe. Cliquez ici : ${appUrl}/reset-password?token=${token}. Si vous n'êtes pas à l'origine de cette demande, ignorez cet email.`;
+        break;
+      case 'notif':
+        subject = 'Nouvelle notification système';
+        body = `Une nouvelle activité a été détectée sur votre compte. Voir les détails : ${appUrl}/dashboard/activity/${token}`;
+        break;
+    }
+    
+    const systemDomains = ['verify-system.com', 'account-notif.net', 'security-alerts.io'];
+    const randomSystemFrom = `support@${systemDomains[Math.floor(Math.random() * systemDomains.length)]}`;
+    
+    await simulateMessage(randomSystemFrom, subject, body);
+  };
+
+  const handleSimulateAppAction = async (type: Activity['type']) => {
+    if (!selectedMailbox) return;
+
+    let actionName = '';
+    let details = '';
+
+    switch(type) {
+      case 'install':
+        actionName = 'Installation Play Store';
+        details = `Téléchargement de l'application ${selectedMailbox.packageName || 'inconnue'}...`;
+        await updateAppStatus(selectedMailbox.id, 'installing');
+        await logActivity('install', actionName, details);
+        
+        // Webhook for install start
+        if (selectedMailbox.webhookUrl) {
+          triggerWebhook(selectedMailbox.webhookUrl, { type: 'install_start', mailboxId: selectedMailbox.id, address: selectedMailbox.address });
+        }
+
+        // Simulate installation delay
+        setTimeout(async () => {
+          await updateAppStatus(selectedMailbox.id, 'installed');
+          await logActivity('action', 'Installation Terminée', `L'application est maintenant prête sur l'appareil simulé.`);
+          if (selectedMailbox.webhookUrl) {
+            triggerWebhook(selectedMailbox.webhookUrl, { type: 'install_complete', mailboxId: selectedMailbox.id, address: selectedMailbox.address });
+          }
+        }, 3000);
+        break;
+      case 'login':
+        actionName = 'Connexion Utilisateur';
+        details = `Tentative de connexion avec l'adresse ${selectedMailbox.address}...`;
+        await logActivity('login', actionName, details);
+        
+        setTimeout(async () => {
+          await updateAppStatus(selectedMailbox.id, 'active');
+          await logActivity('action', 'Session Active', `Utilisateur connecté avec succès. Début de la session active.`);
+          if (selectedMailbox.webhookUrl) {
+            triggerWebhook(selectedMailbox.webhookUrl, { type: 'login_success', mailboxId: selectedMailbox.id, address: selectedMailbox.address });
+          }
+        }, 1500);
+        break;
+      case 'action':
+        const actions = [
+          { name: 'Navigation', details: 'Consultation du catalogue produit' },
+          { name: 'Interaction', details: 'Ajout d\'un article au panier' },
+          { name: 'Profil', details: 'Mise à jour des préférences utilisateur' },
+          { name: 'Recherche', details: 'Recherche de mots-clés spécifiques' }
+        ];
+        const randomAction = actions[Math.floor(Math.random() * actions.length)];
+        actionName = randomAction.name;
+        details = randomAction.details;
+        await logActivity('action', actionName, details);
+        
+        if (selectedMailbox.webhookUrl) {
+          triggerWebhook(selectedMailbox.webhookUrl, { 
+            type: 'action', 
+            mailboxId: selectedMailbox.id, 
+            address: selectedMailbox.address,
+            actionName,
+            details
+          });
+        }
+        break;
+    }
+  };
 
   if (authLoading) {
     return (
@@ -140,12 +372,12 @@ export default function App() {
   const apiSnippets = {
     curl: `curl -X POST https://api.devmail.hub/v1/messages \\
   -H "Authorization: Bearer YOUR_API_KEY" \\
-  -d '{"to": "test-abc12345@devmail.hub", "subject": "Test", "body": "Hello World"}'`,
+  -d '{"to": "user.abc12345@gmail-verify.com", "subject": "Test", "body": "Hello World"}'`,
     javascript: `const response = await fetch('https://api.devmail.hub/v1/messages', {
   method: 'POST',
   headers: { 'Authorization': 'Bearer YOUR_API_KEY' },
   body: JSON.stringify({
-    to: 'test-abc12345@devmail.hub',
+    to: 'user.abc12345@gmail-verify.com',
     subject: 'Test',
     body: 'Hello World'
   })
@@ -154,7 +386,7 @@ export default function App() {
 response = requests.post(
     'https://api.devmail.hub/v1/messages',
     headers={'Authorization': 'Bearer YOUR_API_KEY'},
-    json={'to': 'test-abc12345@devmail.hub', 'subject': 'Test', 'body': 'Hello World'}
+    json={'to': 'user.abc12345@gmail-verify.com', 'subject': 'Test', 'body': 'Hello World'}
 )`
   };
 
@@ -361,6 +593,31 @@ response = requests.post(
                             {mailbox.address}
                           </code>
                           <div className="flex items-center gap-1">
+                            <button 
+                              onClick={() => setSelectedMailboxId(mailbox.id)}
+                              className="p-1.5 hover:bg-zinc-800 rounded-md text-zinc-500 hover:text-orange-500 transition-colors shrink-0"
+                              title="Voir les messages"
+                            >
+                              <Inbox className="w-4 h-4" />
+                            </button>
+                            {mailbox.playStoreUrl && (
+                              <button 
+                                onClick={() => {
+                                  setSelectedMailboxId(mailbox.id);
+                                  setActiveInboxTab('simulation');
+                                }}
+                                className={cn(
+                                  "p-1.5 hover:bg-zinc-800 rounded-md transition-colors shrink-0",
+                                  mailbox.appStatus === 'active' ? "text-green-500" :
+                                  mailbox.appStatus === 'installed' ? "text-blue-500" :
+                                  mailbox.appStatus === 'installing' ? "text-orange-500 animate-pulse" :
+                                  "text-zinc-500 hover:text-orange-500"
+                                )}
+                                title={`App Status: ${mailbox.appStatus || 'idle'}`}
+                              >
+                                <Smartphone className="w-4 h-4" />
+                              </button>
+                            )}
                             {mailbox.targetUrl && (
                               <a 
                                 href={mailbox.targetUrl} 
@@ -560,6 +817,371 @@ test('vérification du mail de bienvenue', async ({ page }) => {
         )}
       </main>
 
+      {/* Inbox Overlay */}
+      <AnimatePresence>
+        {selectedMailboxId && (
+          <motion.div 
+            initial={{ x: '100%' }}
+            animate={{ x: 0 }}
+            exit={{ x: '100%' }}
+            transition={{ type: 'spring', damping: 25, stiffness: 200 }}
+            className="fixed inset-y-0 right-0 w-full md:w-[500px] bg-[#0f0f0f] border-l border-zinc-800 z-[60] shadow-2xl flex flex-col"
+          >
+            <div className="p-6 border-b border-zinc-800 flex items-center justify-between bg-[#0f0f0f]/80 backdrop-blur-md sticky top-0 z-10">
+              <div className="flex items-center gap-3">
+                <button 
+                  onClick={() => {
+                    setSelectedMailboxId(null);
+                    setSelectedMessage(null);
+                  }}
+                  className="p-2 hover:bg-zinc-800 rounded-lg text-zinc-500 transition-colors"
+                >
+                  <ArrowLeft className="w-5 h-5" />
+                </button>
+                <div>
+                  <h3 className="font-bold text-lg leading-tight">{selectedMailbox?.label}</h3>
+                  <p className="text-xs text-zinc-500 font-mono">{selectedMailbox?.address}</p>
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                <button 
+                  onClick={() => handleSimulateScenario('signup')}
+                  className="p-2 hover:bg-orange-500/10 text-zinc-500 hover:text-orange-500 rounded-lg transition-colors"
+                  title="Simuler Inscription"
+                >
+                  <UserCheck className="w-5 h-5" />
+                </button>
+                <button 
+                  onClick={() => handleSimulateScenario('reset')}
+                  className="p-2 hover:bg-orange-500/10 text-zinc-500 hover:text-orange-500 rounded-lg transition-colors"
+                  title="Simuler Reset Password"
+                >
+                  <Zap className="w-5 h-5" />
+                </button>
+              </div>
+            </div>
+
+            <div className="flex border-b border-zinc-800 px-6">
+              <button 
+                onClick={() => setActiveInboxTab('messages')}
+                className={cn(
+                  "px-4 py-3 text-sm font-medium transition-colors border-b-2",
+                  activeInboxTab === 'messages' 
+                    ? "border-orange-500 text-orange-500" 
+                    : "border-transparent text-zinc-500 hover:text-zinc-300"
+                )}
+              >
+                Messages
+              </button>
+              <button 
+                onClick={() => setActiveInboxTab('simulation')}
+                className={cn(
+                  "px-4 py-3 text-sm font-medium transition-colors border-b-2",
+                  activeInboxTab === 'simulation' 
+                    ? "border-orange-500 text-orange-500" 
+                    : "border-transparent text-zinc-500 hover:text-zinc-300"
+                )}
+              >
+                Simulation App
+              </button>
+            </div>
+
+            <div className="flex-1 overflow-y-auto custom-scrollbar p-4 space-y-4">
+              {activeInboxTab === 'messages' ? (
+                <>
+                  {msgLoading ? (
+                    <div className="space-y-4">
+                      {[1, 2, 3].map(i => (
+                        <div key={i} className="h-20 bg-zinc-900/50 rounded-xl animate-pulse border border-zinc-800/50" />
+                      ))}
+                    </div>
+                  ) : messages.length === 0 ? (
+                    <div className="flex flex-col items-center justify-center py-20 text-center space-y-4">
+                      <div className="w-16 h-16 bg-zinc-900 rounded-full flex items-center justify-center border border-zinc-800">
+                        <Inbox className="w-8 h-8 text-zinc-700" />
+                      </div>
+                      <p className="text-zinc-500 text-sm">Aucun message reçu pour le moment.</p>
+                      <button 
+                        onClick={() => handleSimulateScenario('signup')}
+                        className="text-xs text-orange-500 font-medium hover:underline"
+                      >
+                        Simuler une inscription utilisateur
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="space-y-3">
+                      {messages.map((msg) => (
+                        <div 
+                          key={msg.id}
+                          onClick={() => {
+                            setSelectedMessage(msg);
+                            if (!msg.isRead) markAsRead(msg.id);
+                          }}
+                          className={cn(
+                            "p-4 rounded-2xl border transition-all cursor-pointer group/msg",
+                            selectedMessage?.id === msg.id 
+                              ? "bg-orange-500/5 border-orange-500/30" 
+                              : "bg-zinc-900/30 border-zinc-800/50 hover:border-zinc-700",
+                            !msg.isRead && "border-l-4 border-l-orange-500"
+                          )}
+                        >
+                          <div className="flex justify-between items-start mb-1">
+                            <span className="text-xs font-bold text-zinc-400 truncate max-w-[200px]">{msg.from}</span>
+                            <span className="text-[10px] text-zinc-600 flex items-center gap-1">
+                              <Clock className="w-3 h-3" />
+                              {msg.receivedAt?.seconds ? format(new Date(msg.receivedAt.seconds * 1000), 'HH:mm') : '...'}
+                            </span>
+                          </div>
+                          <h4 className={cn(
+                            "text-sm font-semibold mb-2 line-clamp-1",
+                            !msg.isRead ? "text-white" : "text-zinc-400"
+                          )}>
+                            {msg.subject}
+                          </h4>
+                          <p className="text-xs text-zinc-500 line-clamp-2 leading-relaxed">
+                            {msg.body}
+                          </p>
+                          
+                          {msg.links.length > 0 && (
+                            <div className="mt-3 flex flex-wrap gap-2">
+                              {msg.links.map((link, idx) => (
+                                <a 
+                                  key={idx}
+                                  href={link}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  onClick={(e) => e.stopPropagation()}
+                                  className="flex items-center gap-1.5 px-2 py-1 bg-orange-500/10 text-orange-500 rounded-md text-[10px] font-bold hover:bg-orange-500/20 transition-colors"
+                                >
+                                  <ExternalLink className="w-3 h-3" />
+                                  Action Utilisateur
+                                </a>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </>
+              ) : (
+                <div className="space-y-6">
+                  {/* App Status Card */}
+                  <div className="bg-zinc-900/50 border border-zinc-800 rounded-2xl p-6 space-y-4">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-3">
+                        <div className="w-12 h-12 bg-orange-500/10 rounded-xl flex items-center justify-center text-orange-500 border border-orange-500/20">
+                          <Smartphone className="w-6 h-6" />
+                        </div>
+                        <div>
+                          <h4 className="font-bold text-sm">Simulation Mobile</h4>
+                          <p className="text-xs text-zinc-500">{selectedMailbox?.packageName || 'Aucun package configuré'}</p>
+                        </div>
+                      </div>
+                      <div className={cn(
+                        "px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider border",
+                        selectedMailbox?.appStatus === 'active' ? "bg-green-500/10 text-green-500 border-green-500/20" :
+                        selectedMailbox?.appStatus === 'installed' ? "bg-blue-500/10 text-blue-500 border-blue-500/20" :
+                        selectedMailbox?.appStatus === 'installing' ? "bg-orange-500/10 text-orange-500 border-orange-500/20 animate-pulse" :
+                        "bg-zinc-800 text-zinc-500 border-zinc-700"
+                      )}>
+                        {selectedMailbox?.appStatus || 'idle'}
+                      </div>
+                    </div>
+
+                    {selectedMailbox?.playStoreUrl && (
+                      <a 
+                        href={selectedMailbox.playStoreUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="flex items-center justify-between p-3 bg-black/40 border border-zinc-800 rounded-xl hover:border-zinc-700 transition-colors group"
+                      >
+                        <div className="flex items-center gap-2">
+                          <Play className="w-4 h-4 text-zinc-500 group-hover:text-orange-500" />
+                          <span className="text-xs text-zinc-400">Voir sur le Play Store</span>
+                        </div>
+                        <ExternalLink className="w-3 h-3 text-zinc-600" />
+                      </a>
+                    )}
+
+                    <div className="grid grid-cols-2 gap-3">
+                      <button 
+                        onClick={() => handleSimulateAppAction('install')}
+                        disabled={selectedMailbox?.appStatus !== 'idle'}
+                        className="flex items-center justify-center gap-2 p-3 bg-zinc-800 hover:bg-zinc-700 disabled:opacity-50 disabled:cursor-not-allowed rounded-xl text-xs font-bold transition-all"
+                      >
+                        <Download className="w-4 h-4" />
+                        Installer
+                      </button>
+                      <button 
+                        onClick={() => handleSimulateAppAction('login')}
+                        disabled={selectedMailbox?.appStatus === 'idle' || selectedMailbox?.appStatus === 'installing'}
+                        className="flex items-center justify-center gap-2 p-3 bg-zinc-800 hover:bg-zinc-700 disabled:opacity-50 disabled:cursor-not-allowed rounded-xl text-xs font-bold transition-all"
+                      >
+                        <LogIn className="w-4 h-4" />
+                        Connexion
+                      </button>
+                    </div>
+                    
+                    <button 
+                      onClick={() => handleSimulateAppAction('action')}
+                      disabled={selectedMailbox?.appStatus !== 'active'}
+                      className="w-full flex items-center justify-center gap-2 p-3 bg-orange-500 hover:bg-orange-600 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-xl text-xs font-bold transition-all shadow-lg shadow-orange-500/20"
+                    >
+                      <ActivityIcon className="w-4 h-4" />
+                      Réaliser une action in-app
+                    </button>
+
+                    {/* Auto-Pilot Toggle */}
+                    <div className="pt-4 border-t border-zinc-800 flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <Bot className={cn("w-4 h-4", selectedMailbox?.isAutoPilotEnabled ? "text-orange-500" : "text-zinc-600")} />
+                        <div className="space-y-0.5">
+                          <p className="text-xs font-bold">Mode Auto-Pilote</p>
+                          <p className="text-[10px] text-zinc-500">Actions périodiques automatiques</p>
+                        </div>
+                      </div>
+                      <button 
+                        onClick={() => selectedMailbox && toggleAutoPilot(selectedMailbox.id, !!selectedMailbox.isAutoPilotEnabled)}
+                        className={cn(
+                          "relative inline-flex h-5 w-10 shrink-0 cursor-pointer items-center rounded-full transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-orange-500 focus-visible:ring-offset-2 focus-visible:ring-offset-black",
+                          selectedMailbox?.isAutoPilotEnabled ? "bg-orange-500" : "bg-zinc-800"
+                        )}
+                      >
+                        <span className={cn(
+                          "pointer-events-none block h-4 w-4 rounded-full bg-white shadow-lg ring-0 transition-transform",
+                          selectedMailbox?.isAutoPilotEnabled ? "translate-x-5" : "translate-x-1"
+                        )} />
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Activity Log */}
+                  <div className="space-y-4">
+                    <div className="flex items-center justify-between px-2">
+                      <h4 className="text-xs font-bold text-zinc-600 uppercase tracking-widest flex items-center gap-2">
+                        <Clock className="w-3 h-3" />
+                        Journal d'activité
+                      </h4>
+                      <button 
+                        onClick={exportActivities}
+                        disabled={activities.length === 0}
+                        className="flex items-center gap-1.5 text-[10px] font-bold text-zinc-500 hover:text-orange-500 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                      >
+                        <DownloadCloud className="w-3 h-3" />
+                        Exporter CSV
+                      </button>
+                    </div>
+                    <div className="space-y-3">
+                      {activities.length === 0 ? (
+                        <div className="p-8 text-center border border-dashed border-zinc-800 rounded-2xl">
+                          <p className="text-xs text-zinc-600">Aucune activité enregistrée.</p>
+                        </div>
+                      ) : (
+                        activities.map((activity) => (
+                          <div key={activity.id} className="flex gap-4 group">
+                            <div className="flex flex-col items-center">
+                              <div className={cn(
+                                "w-8 h-8 rounded-full flex items-center justify-center border shrink-0",
+                                activity.type === 'install' ? "bg-blue-500/10 border-blue-500/20 text-blue-500" :
+                                activity.type === 'login' ? "bg-green-500/10 border-green-500/20 text-green-500" :
+                                activity.type === 'action' ? "bg-orange-500/10 border-orange-500/20 text-orange-500" :
+                                "bg-zinc-800 border-zinc-700 text-zinc-500"
+                              )}>
+                                {activity.type === 'install' ? <Download className="w-4 h-4" /> :
+                                 activity.type === 'login' ? <LogIn className="w-4 h-4" /> :
+                                 activity.type === 'action' ? <ActivityIcon className="w-4 h-4" /> :
+                                 <Trash2 className="w-4 h-4" />}
+                              </div>
+                              <div className="w-px flex-1 bg-zinc-800 my-1 group-last:hidden" />
+                            </div>
+                            <div className="flex-1 pb-6">
+                              <div className="flex justify-between items-start mb-1">
+                                <h5 className="text-sm font-bold capitalize">{activity.type}</h5>
+                                <span className="text-[10px] text-zinc-600">
+                                  {activity.timestamp?.seconds ? format(new Date(activity.timestamp.seconds * 1000), 'HH:mm:ss') : '...'}
+                                </span>
+                              </div>
+                              <p className="text-xs text-zinc-500 leading-relaxed">
+                                {activity.actionName ? <span className="font-bold text-zinc-400">{activity.actionName}: </span> : ''}
+                                {activity.details}
+                              </p>
+                            </div>
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {selectedMessage && (
+              <motion.div 
+                initial={{ y: '100%' }}
+                animate={{ y: 0 }}
+                className="absolute inset-0 bg-[#0f0f0f] z-20 flex flex-col"
+              >
+                <div className="p-6 border-b border-zinc-800 flex items-center gap-4">
+                  <button 
+                    onClick={() => setSelectedMessage(null)}
+                    className="p-2 hover:bg-zinc-800 rounded-lg text-zinc-500 transition-colors"
+                  >
+                    <ArrowLeft className="w-5 h-5" />
+                  </button>
+                  <div className="flex-1 min-w-0">
+                    <h3 className="font-bold text-lg truncate">{selectedMessage.subject}</h3>
+                    <p className="text-xs text-zinc-500">De: {selectedMessage.from}</p>
+                  </div>
+                </div>
+                <div className="flex-1 overflow-y-auto p-8 space-y-8">
+                  <div className="space-y-4">
+                    <div className="flex items-center justify-between text-xs text-zinc-500">
+                      <span>Reçu le {selectedMessage.receivedAt?.seconds ? format(new Date(selectedMessage.receivedAt.seconds * 1000), 'dd MMMM yyyy à HH:mm') : '...'}</span>
+                      {selectedMessage.isRead ? <Eye className="w-4 h-4" /> : <EyeOff className="w-4 h-4" />}
+                    </div>
+                    <div className="bg-zinc-900/50 rounded-2xl p-6 border border-zinc-800/50 leading-relaxed text-zinc-300 whitespace-pre-wrap">
+                      {selectedMessage.body}
+                    </div>
+                  </div>
+
+                  {selectedMessage.links.length > 0 && (
+                    <div className="space-y-4">
+                      <h4 className="text-xs font-bold text-zinc-600 uppercase tracking-widest flex items-center gap-2">
+                        <Zap className="w-3 h-3" />
+                        Actions Automatiques Détectées
+                      </h4>
+                      <div className="grid gap-3">
+                        {selectedMessage.links.map((link, idx) => (
+                          <a 
+                            key={idx}
+                            href={link}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="flex items-center justify-between p-4 bg-orange-500/5 border border-orange-500/20 rounded-xl hover:bg-orange-500/10 transition-all group"
+                          >
+                            <div className="flex items-center gap-3">
+                              <div className="w-10 h-10 bg-orange-500/10 rounded-lg flex items-center justify-center text-orange-500">
+                                <UserCheck className="w-5 h-5" />
+                              </div>
+                              <div>
+                                <p className="text-sm font-bold text-orange-500">Agir en tant qu'utilisateur</p>
+                                <p className="text-[10px] text-zinc-500 truncate max-w-[250px]">{link}</p>
+                              </div>
+                            </div>
+                            <ChevronRight className="w-5 h-5 text-zinc-700 group-hover:text-orange-500 transition-colors" />
+                          </a>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </motion.div>
+            )}
+          </motion.div>
+        )}
+      </AnimatePresence>
+
       {/* Modal */}
       <AnimatePresence>
         {isModalOpen && (
@@ -629,6 +1251,58 @@ test('vérification du mail de bienvenue', async ({ page }) => {
                       onChange={(e) => setNewWebhookUrl(e.target.value)}
                       className="w-full bg-zinc-900 border border-zinc-800 rounded-xl p-3 focus:outline-none focus:border-orange-500/50 transition-all text-sm"
                     />
+                  </div>
+                </div>
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium text-zinc-400">URL Play Store (Optionnel)</label>
+                    <input 
+                      type="url" 
+                      placeholder="https://play.google.com/store/apps/details?id=..." 
+                      value={newPlayStoreUrl}
+                      onChange={(e) => setNewPlayStoreUrl(e.target.value)}
+                      className="w-full bg-zinc-900 border border-zinc-800 rounded-xl p-3 focus:outline-none focus:border-orange-500/50 transition-all text-sm"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium text-zinc-400">Package Name (Android)</label>
+                    <input 
+                      type="text" 
+                      placeholder="com.votreapp.android" 
+                      value={newPackageName}
+                      onChange={(e) => setNewPackageName(e.target.value)}
+                      className="w-full bg-zinc-900 border border-zinc-800 rounded-xl p-3 focus:outline-none focus:border-orange-500/50 transition-all text-sm"
+                    />
+                  </div>
+                </div>
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium text-zinc-400">Nombre d'adresses</label>
+                    <input 
+                      type="number" 
+                      min="1"
+                      max="20"
+                      value={newCount}
+                      onChange={(e) => setNewCount(parseInt(e.target.value) || 1)}
+                      className="w-full bg-zinc-900 border border-zinc-800 rounded-xl p-3 focus:outline-none focus:border-orange-500/50 transition-all text-sm"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium text-zinc-400">Domaine de l'adresse</label>
+                    <div className="relative">
+                      <select 
+                        value={newDomain}
+                        onChange={(e) => setNewDomain(e.target.value)}
+                        className="w-full bg-zinc-900 border border-zinc-800 rounded-xl p-3 focus:outline-none focus:border-orange-500/50 transition-all text-sm appearance-none cursor-pointer"
+                      >
+                        <option value="gmail-verify.com">gmail-verify.com (Recommandé)</option>
+                        <option value="outlook-test.net">outlook-test.net</option>
+                        <option value="mbox-pro.io">mbox-pro.io</option>
+                        <option value="user-mail.org">user-mail.org</option>
+                        <option value="cloud-verify.me">cloud-verify.me</option>
+                      </select>
+                      <ChevronRight className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-500 pointer-events-none rotate-90" />
+                    </div>
                   </div>
                 </div>
                 <div className="pt-4 flex gap-3">

@@ -26,12 +26,53 @@
         "project": { "type": "string" },
         "notes": { "type": "string" },
         "targetUrl": { "type": "string", "format": "uri", "description": "URL of the app to test" },
+        "playStoreUrl": { "type": "string", "format": "uri", "description": "URL of the app on Play Store" },
+        "packageName": { "type": "string", "description": "Package name of the app" },
         "webhookUrl": { "type": "string", "format": "uri", "description": "URL to trigger on new email" },
         "status": { "type": "string", "enum": ["active", "inactive"] },
+        "appStatus": { "type": "string", "enum": ["idle", "installing", "installed", "active"] },
+        "isAutoPilotEnabled": { "type": "boolean", "description": "Whether auto-pilot is enabled for this mailbox" },
         "createdAt": { "type": "string", "format": "date-time" },
         "lastMessageAt": { "type": "string", "format": "date-time" }
       },
       "required": ["userId", "address", "status", "createdAt"]
+    },
+    "Activity": {
+      "title": "Activity",
+      "description": "A simulated user action on the app",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "mailboxId": { "type": "string" },
+        "userId": { "type": "string" },
+        "type": { "type": "string", "enum": ["install", "login", "action", "uninstall"] },
+        "actionName": { "type": "string", "description": "Name of the action performed" },
+        "details": { "type": "string" },
+        "timestamp": { "type": "string", "format": "date-time" }
+      },
+      "required": ["mailboxId", "userId", "type", "timestamp"]
+    },
+    "Message": {
+      "title": "Message",
+      "description": "An email message received by a mailbox",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "mailboxId": { "type": "string" },
+        "userId": { "type": "string" },
+        "from": { "type": "string" },
+        "subject": { "type": "string" },
+        "body": { "type": "string" },
+        "html": { "type": "string" },
+        "links": { 
+          "type": "array", 
+          "items": { "type": "string", "format": "uri" },
+          "description": "Extracted links from the email body"
+        },
+        "receivedAt": { "type": "string", "format": "date-time" },
+        "isRead": { "type": "boolean" }
+      },
+      "required": ["mailboxId", "from", "subject", "receivedAt"]
     }
   },
   "firestore": {
@@ -42,6 +83,14 @@
     "/mailboxes/{mailboxId}": {
       "schema": "Mailbox",
       "description": "Managed test email addresses"
+    },
+    "/messages/{messageId}": {
+      "schema": "Message",
+      "description": "Received email messages"
+    },
+    "/activities/{activityId}": {
+      "schema": "Activity",
+      "description": "Simulated user activities"
     }
   }
 }
