@@ -1,0 +1,5 @@
+{
+  "name": "DevMail Hub",
+  "description": "Plateforme de gestion d'adresses mail de test pour développeurs et QA.",
+  "requestFramePermissions": []
+}
