@@ -27,26 +27,40 @@ export function useActivities(mailboxId: string | null) {
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
-    if (!mailboxId || !auth.currentUser) {
+    if (!auth.currentUser) {
       setActivities([]);
       return;
     }
 
     setLoading(true);
-    const q = query(
+    let q = query(
       collection(db, 'activities'),
-      where('mailboxId', '==', mailboxId),
       where('userId', '==', auth.currentUser.uid),
-      orderBy('timestamp', 'desc'),
-      limit(50)
+      limit(100)
     );
+
+    if (mailboxId) {
+      q = query(
+        collection(db, 'activities'),
+        where('mailboxId', '==', mailboxId),
+        where('userId', '==', auth.currentUser.uid),
+        limit(100)
+      );
+    }
 
     const unsubscribe = onSnapshot(q, (snapshot) => {
       const list = snapshot.docs.map(doc => ({
         id: doc.id,
         ...doc.data()
       })) as Activity[];
-      setActivities(list);
+      
+      const sortedList = list.sort((a, b) => {
+        const dateA = a.timestamp?.seconds || 0;
+        const dateB = b.timestamp?.seconds || 0;
+        return dateB - dateA;
+      });
+
+      setActivities(sortedList);
       setLoading(false);
     }, (err) => {
       console.error("Firestore Error (Activities):", err);

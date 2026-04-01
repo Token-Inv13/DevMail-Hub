@@ -6,11 +6,23 @@
 import { useState, useEffect } from 'react';
 import { useAuth } from './hooks/useAuth';
 import { useMailboxes, Mailbox } from './hooks/useMailboxes';
+import { useInfrastructure, Domain } from './hooks/useInfrastructure';
 import { useMessages, Message } from './hooks/useMessages';
 import { useActivities, Activity } from './hooks/useActivities';
 import { auth, db } from './firebase';
 import { collection, addDoc, serverTimestamp } from 'firebase/firestore';
 import { signInWithPopup, GoogleAuthProvider, signOut } from 'firebase/auth';
+import { 
+  LineChart, 
+  Line, 
+  XAxis, 
+  YAxis, 
+  CartesianGrid, 
+  Tooltip, 
+  ResponsiveContainer,
+  AreaChart,
+  Area
+} from 'recharts';
 import { 
   Mail, 
   Plus, 
@@ -44,18 +56,24 @@ import {
   FileJson,
   Share2,
   DownloadCloud,
-  Bot
+  Bot,
+  Loader2,
+  Globe,
+  Layers
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { format } from 'date-fns';
 import { cn } from './lib/utils';
+import { GoogleGenAI, GenerateContentResponse } from "@google/genai";
 
 export default function App() {
   const { user, loading: authLoading, apiKey, rotateApiKey } = useAuth();
   const { mailboxes, loading: mailLoading, error: mailError, createMailbox, toggleStatus, removeMailbox, updateAppStatus, toggleAutoPilot } = useMailboxes(user);
+  const { domains, loading: domainsLoading, addDomain, deleteDomain, checkDomainStatus, searchDomains, buyDomain, automateDNS } = useInfrastructure();
   const [selectedMailboxId, setSelectedMailboxId] = useState<string | null>(null);
   const { messages, loading: msgLoading, simulateMessage, markAsRead } = useMessages(selectedMailboxId);
   const { activities, logActivity } = useActivities(selectedMailboxId);
+  const { activities: globalActivities } = useActivities(null);
   const [selectedMessage, setSelectedMessage] = useState<Message | null>(null);
   
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -67,14 +85,41 @@ export default function App() {
   const [newPlayStoreUrl, setNewPlayStoreUrl] = useState('');
   const [newPackageName, setNewPackageName] = useState('');
   const [newCount, setNewCount] = useState(1);
-  const [newDomain, setNewDomain] = useState('gmail-verify.com');
+  const [newDomain, setNewDomain] = useState('');
   const [search, setSearch] = useState('');
+
+  // Auto-select first domain if none selected
+  useEffect(() => {
+    if (domains.length > 0 && !newDomain) {
+      console.log("App: Auto-selecting first domain:", domains[0].name);
+      setNewDomain(domains[0].name);
+    }
+  }, [domains, newDomain]);
+
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [isApiModalOpen, setIsApiModalOpen] = useState(false);
   const [activeSnippet, setActiveSnippet] = useState<'curl' | 'javascript' | 'python'>('javascript');
   const [selectedProject, setSelectedProject] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'extension' | 'settings'>('dashboard');
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'extension' | 'settings' | 'infrastructure' | 'simulation'>('dashboard');
+  const [webhookLogs, setWebhookLogs] = useState<{ id: string, timestamp: Date, url: string, payload: any, status: 'success' | 'error' }[]>([]);
+  const [testWebhookUrl, setTestWebhookUrl] = useState('');
+  const [isTestingWebhook, setIsTestingWebhook] = useState(false);
   const [activeInboxTab, setActiveInboxTab] = useState<'messages' | 'simulation'>('messages');
+  const [domainDiagnostics, setDomainDiagnostics] = useState<Record<string, { mx: boolean, spf: boolean, dkim: boolean }>>({});
+  const [domainSearchQuery, setDomainSearchQuery] = useState('');
+  const [searchResults, setSearchResults] = useState<{ name: string, price: string, available: boolean }[]>([]);
+  const [isSearching, setIsSearching] = useState(false);
+  const [isBuying, setIsBuying] = useState<string | null>(null);
+  const [isAutomating, setIsAutomating] = useState<string | null>(null);
+  const [autoCreateSubdomain, setAutoCreateSubdomain] = useState(false);
+
+  // Cloudflare Integration State
+  const [cfZones, setCfZones] = useState<any[]>([]);
+  const [isCFLoading, setIsCFLoading] = useState(false);
+  const [cfError, setCfError] = useState<string | null>(null);
+  const [selectedCfZoneId, setSelectedCfZoneId] = useState<string>('');
+  const [isConfiguringDNS, setIsConfiguringDNS] = useState<string | null>(null);
+  const [isCfConnected, setIsCfConnected] = useState(false);
 
   // Auto-Pilot Logic
   useEffect(() => {
@@ -187,7 +232,41 @@ export default function App() {
 
   const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault();
-    await createMailbox(newLabel, newProject, newNotes, newTargetUrl, newWebhookUrl, newPlayStoreUrl, newPackageName, newCount, newDomain);
+    if (!newLabel || !newDomain) return;
+    
+    const domainToUse = newDomain;
+    
+    // Auto-create subdomain if requested and CF is connected
+    if (autoCreateSubdomain && isCfConnected && selectedCfZoneId && domains.some(d => d.name === domainToUse)) {
+      const subdomain = newLabel.toLowerCase().replace(/[^a-z0-9]/g, '-');
+      try {
+        await fetch('/api/cloudflare/create-subdomain', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            zoneId: selectedCfZoneId,
+            subdomain,
+            target: window.location.hostname // Point to current app
+          })
+        });
+      } catch (err) {
+        console.error("Subdomain creation failed:", err);
+      }
+    }
+
+    await createMailbox(
+      newLabel, 
+      newProject, 
+      newNotes, 
+      newTargetUrl, 
+      newWebhookUrl, 
+      newPlayStoreUrl, 
+      newPackageName, 
+      newCount, 
+      domainToUse
+    );
+    
+    setIsModalOpen(false);
     setNewLabel('');
     setNewProject('');
     setNewNotes('');
@@ -196,7 +275,130 @@ export default function App() {
     setNewPlayStoreUrl('');
     setNewPackageName('');
     setNewCount(1);
-    setIsModalOpen(false);
+    setAutoCreateSubdomain(false);
+  };
+
+  const handleDomainSearch = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!domainSearchQuery) return;
+    setIsSearching(true);
+    const results = await searchDomains(domainSearchQuery);
+    setSearchResults(results);
+    setIsSearching(false);
+  };
+
+  const handleBuyDomain = async (name: string) => {
+    setIsBuying(name);
+    await buyDomain(name);
+    setIsBuying(null);
+    setSearchResults([]);
+    setDomainSearchQuery('');
+  };
+
+  const handleAutomateDNS = async (id: string, domainName: string) => {
+    if (isCfConnected && selectedCfZoneId) {
+      await handleSetupCloudflareDNS(id, domainName);
+    } else {
+      setIsAutomating(id);
+      await automateDNS(id, 'cloudflare');
+      setIsAutomating(null);
+    }
+  };
+
+  const handleCheckDomainStatus = async (domain: Domain) => {
+    if (domain.isAutomated && domain.dnsProvider === 'cloudflare' && isCfConnected && selectedCfZoneId) {
+      try {
+        const res = await fetch(`/api/cloudflare/verify-dns/${selectedCfZoneId}`);
+        const data = await res.json();
+        if (data.error) throw new Error(data.error);
+        
+        const { doc, updateDoc } = await import('firebase/firestore');
+        const domainRef = doc(db, 'domains', domain.id);
+        await updateDoc(domainRef, {
+          mxValid: data.mxValid,
+          spfValid: data.spfValid,
+          status: (data.mxValid && data.spfValid) ? 'active' : 'pending'
+        });
+        alert(`Vérification Cloudflare terminée : MX=${data.mxValid}, SPF=${data.spfValid}`);
+      } catch (err: any) {
+        alert(`Erreur de vérification: ${err.message}`);
+      }
+    } else {
+      await checkDomainStatus(domain.id);
+    }
+  };
+
+  const fetchCloudflareZones = async () => {
+    setIsCFLoading(true);
+    setCfError(null);
+    try {
+      const res = await fetch('/api/cloudflare/zones');
+      const data = await res.json();
+      if (data.error) throw new Error(typeof data.error === 'string' ? data.error : JSON.stringify(data.error));
+      setCfZones(data.result || []);
+      setIsCfConnected(true);
+    } catch (err: any) {
+      setCfError(err.message);
+      setIsCfConnected(false);
+    } finally {
+      setIsCFLoading(false);
+    }
+  };
+
+  const handleSetupCloudflareDNS = async (domainId: string, domainName: string) => {
+    if (!selectedCfZoneId) {
+      alert("Veuillez sélectionner une zone Cloudflare d'abord.");
+      return;
+    }
+    setIsConfiguringDNS(domainId);
+    try {
+      const res = await fetch('/api/cloudflare/setup-dns', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ zoneId: selectedCfZoneId, domainName })
+      });
+      const data = await res.json();
+      if (data.error) throw new Error(typeof data.error === 'string' ? data.error : JSON.stringify(data.error));
+      
+      // Update local domain status via hook
+      await automateDNS(domainId, 'cloudflare');
+      alert(`DNS configuré avec succès pour ${domainName} !`);
+    } catch (err: any) {
+      alert(`Erreur DNS: ${err.message}`);
+    } finally {
+      setIsConfiguringDNS(null);
+    }
+  };
+
+  const handleImportCfZone = async () => {
+    const zone = cfZones.find(z => z.id === selectedCfZoneId);
+    if (!zone) {
+      console.error("App: Zone not found for ID:", selectedCfZoneId);
+      return;
+    }
+
+    if (domains.some(d => d.name === zone.name)) {
+      console.warn("App: Domain already imported:", zone.name);
+      alert("Ce domaine est déjà importé.");
+      return;
+    }
+
+    console.log("App: Starting import for zone:", zone.name);
+    setIsCFLoading(true);
+    try {
+      const newDomainId = await addDomain(zone.name, true, 'cloudflare');
+      if (newDomainId) {
+        console.log("App: Domain added to Firestore with ID:", newDomainId);
+        await handleSetupCloudflareDNS(newDomainId, zone.name);
+      } else {
+        console.error("App: addDomain returned null ID");
+      }
+    } catch (err: any) {
+      console.error("App: Import Error:", err);
+      alert(`Erreur d'importation: ${err.message}`);
+    } finally {
+      setIsCFLoading(false);
+    }
   };
 
   const copyToClipboard = (text: string, id: string) => {
@@ -243,7 +445,7 @@ export default function App() {
         break;
     }
     
-    const systemDomains = ['verify-system.com', 'account-notif.net', 'security-alerts.io'];
+    const systemDomains = ['tech-support.pro', 'security-verify.net', 'accounts-global.io', 'staff-notif.org'];
     const randomSystemFrom = `support@${systemDomains[Math.floor(Math.random() * systemDomains.length)]}`;
     
     await simulateMessage(randomSystemFrom, subject, body);
@@ -372,12 +574,12 @@ export default function App() {
   const apiSnippets = {
     curl: `curl -X POST https://api.devmail.hub/v1/messages \\
   -H "Authorization: Bearer YOUR_API_KEY" \\
-  -d '{"to": "user.abc12345@gmail-verify.com", "subject": "Test", "body": "Hello World"}'`,
+  -d '{"to": "john.doe.abc12@tech-solutions.pro", "subject": "Test", "body": "Hello World"}'`,
     javascript: `const response = await fetch('https://api.devmail.hub/v1/messages', {
   method: 'POST',
   headers: { 'Authorization': 'Bearer YOUR_API_KEY' },
   body: JSON.stringify({
-    to: 'user.abc12345@gmail-verify.com',
+    to: 'john.doe.abc12@tech-solutions.pro',
     subject: 'Test',
     body: 'Hello World'
   })
@@ -386,7 +588,7 @@ export default function App() {
 response = requests.post(
     'https://api.devmail.hub/v1/messages',
     headers={'Authorization': 'Bearer YOUR_API_KEY'},
-    json={'to': 'user.abc12345@gmail-verify.com', 'subject': 'Test', 'body': 'Hello World'}
+    json={'to': 'john.doe.abc12@tech-solutions.pro', 'subject': 'Test', 'body': 'Hello World'}
 )`
   };
 
@@ -422,6 +624,26 @@ response = requests.post(
             >
               <Code className="w-5 h-5" />
               <span className="hidden md:block">Browser Extension</span>
+            </button>
+            <button 
+              onClick={() => setActiveTab('infrastructure')}
+              className={cn(
+                "w-full flex items-center gap-3 p-3 rounded-xl font-medium transition-colors",
+                activeTab === 'infrastructure' ? "bg-orange-500/10 text-orange-500" : "text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800/30"
+              )}
+            >
+              <DownloadCloud className="w-5 h-5" />
+              <span className="hidden md:block">Infrastructure</span>
+            </button>
+            <button 
+              onClick={() => setActiveTab('simulation')}
+              className={cn(
+                "w-full flex items-center gap-3 p-3 rounded-xl font-medium transition-colors",
+                activeTab === 'simulation' ? "bg-orange-500/10 text-orange-500" : "text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800/30"
+              )}
+            >
+              <Play className="w-5 h-5" />
+              <span className="hidden md:block">Live Simulation</span>
             </button>
             <button 
               onClick={() => setActiveTab('settings')}
@@ -517,6 +739,111 @@ response = requests.post(
             </header>
 
             <div className="p-6">
+              {!selectedProject && !selectedMailboxId && (
+                <>
+                  <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-8">
+                  <div className="bg-zinc-900/50 border border-zinc-800/50 p-5 rounded-2xl hover:border-orange-500/30 transition-all">
+                    <div className="flex items-center justify-between mb-2">
+                      <p className="text-xs text-zinc-500 uppercase tracking-wider font-semibold">Mailboxes</p>
+                      <Mail className="w-4 h-4 text-zinc-700" />
+                    </div>
+                    <p className="text-3xl font-bold">{mailboxes.length}</p>
+                    <p className="text-[10px] text-green-500 mt-1 flex items-center gap-1">
+                      <Plus className="w-2 h-2" /> 12% cette semaine
+                    </p>
+                  </div>
+                  <div className="bg-zinc-900/50 border border-zinc-800/50 p-5 rounded-2xl hover:border-orange-500/30 transition-all">
+                    <div className="flex items-center justify-between mb-2">
+                      <p className="text-xs text-zinc-500 uppercase tracking-wider font-semibold">Domaines Actifs</p>
+                      <Globe className="w-4 h-4 text-zinc-700" />
+                    </div>
+                    <p className="text-3xl font-bold text-green-500">{domains.filter(d => d.status === 'active').length}</p>
+                    <p className="text-[10px] text-zinc-500 mt-1">Sur {domains.length} domaines total</p>
+                  </div>
+                  <div className="bg-zinc-900/50 border border-zinc-800/50 p-5 rounded-2xl hover:border-orange-500/30 transition-all">
+                    <div className="flex items-center justify-between mb-2">
+                      <p className="text-xs text-zinc-500 uppercase tracking-wider font-semibold">Projets</p>
+                      <Layers className="w-4 h-4 text-zinc-700" />
+                    </div>
+                    <p className="text-3xl font-bold text-orange-500">{projects.length}</p>
+                    <p className="text-[10px] text-zinc-500 mt-1">Organisation active</p>
+                  </div>
+                  <div className="bg-zinc-900/50 border border-zinc-800/50 p-5 rounded-2xl hover:border-orange-500/30 transition-all">
+                    <div className="flex items-center justify-between mb-2">
+                      <p className="text-xs text-zinc-500 uppercase tracking-wider font-semibold">Santé Système</p>
+                      <ActivityIcon className="w-4 h-4 text-zinc-700" />
+                    </div>
+                    <p className="text-3xl font-bold text-blue-500">98.2%</p>
+                    <p className="text-[10px] text-blue-400 mt-1 flex items-center gap-1">
+                      <ShieldCheck className="w-2 h-2" /> Tous les services OK
+                    </p>
+                  </div>
+                </div>
+                <div className="bg-[#0f0f0f] border border-zinc-800/50 rounded-2xl p-6 mb-8">
+                  <div className="flex items-center justify-between mb-6">
+                    <div>
+                      <h3 className="text-lg font-bold">Volume de messages</h3>
+                      <p className="text-xs text-zinc-500">Activité sur les 7 derniers jours</p>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span className="flex items-center gap-1 text-[10px] text-zinc-500">
+                        <span className="w-2 h-2 rounded-full bg-orange-500" />
+                        Messages reçus
+                      </span>
+                    </div>
+                  </div>
+                  <div className="h-64 w-full">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <AreaChart data={[
+                        { name: 'Lun', messages: 120 },
+                        { name: 'Mar', messages: 210 },
+                        { name: 'Mer', messages: 180 },
+                        { name: 'Jeu', messages: 340 },
+                        { name: 'Ven', messages: 280 },
+                        { name: 'Sam', messages: 150 },
+                        { name: 'Dim', messages: 190 },
+                      ]}>
+                        <defs>
+                          <linearGradient id="colorMsg" x1="0" y1="0" x2="0" y2="1">
+                            <stop offset="5%" stopColor="#f97316" stopOpacity={0.3}/>
+                            <stop offset="95%" stopColor="#f97316" stopOpacity={0}/>
+                          </linearGradient>
+                        </defs>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#1f1f1f" vertical={false} />
+                        <XAxis 
+                          dataKey="name" 
+                          stroke="#525252" 
+                          fontSize={10} 
+                          tickLine={false} 
+                          axisLine={false} 
+                        />
+                        <YAxis 
+                          stroke="#525252" 
+                          fontSize={10} 
+                          tickLine={false} 
+                          axisLine={false} 
+                          tickFormatter={(value) => `${value}`}
+                        />
+                        <Tooltip 
+                          contentStyle={{ backgroundColor: '#0f0f0f', border: '1px solid #27272a', borderRadius: '8px' }}
+                          itemStyle={{ color: '#f97316', fontSize: '12px' }}
+                          labelStyle={{ color: '#a1a1aa', fontSize: '10px', marginBottom: '4px' }}
+                        />
+                        <Area 
+                          type="monotone" 
+                          dataKey="messages" 
+                          stroke="#f97316" 
+                          strokeWidth={2}
+                          fillOpacity={1} 
+                          fill="url(#colorMsg)" 
+                        />
+                      </AreaChart>
+                    </ResponsiveContainer>
+                  </div>
+                </div>
+              </>
+            )}
+
               {mailError && (
                 <div className="mb-6 p-4 bg-red-500/10 border border-red-500/20 rounded-xl text-red-400 text-sm flex items-center gap-3">
                   <ShieldCheck className="w-5 h-5 shrink-0" />
@@ -546,118 +873,564 @@ response = requests.post(
                   </button>
                 </div>
               ) : (
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                  <AnimatePresence mode="popLayout">
-                    {filteredMailboxes.map((mailbox) => (
-                      <motion.div
-                        key={mailbox.id}
-                        layout
-                        initial={{ opacity: 0, scale: 0.9 }}
-                        animate={{ opacity: 1, scale: 1 }}
-                        exit={{ opacity: 0, scale: 0.9 }}
-                        className="group bg-[#0f0f0f] border border-zinc-800/50 rounded-2xl p-5 hover:border-orange-500/30 transition-all hover:shadow-2xl hover:shadow-orange-500/5"
-                      >
-                        <div className="flex justify-between items-start mb-4">
-                          <div className="space-y-1">
-                            <div className="flex items-center gap-2">
-                              <span className={cn(
-                                "w-2 h-2 rounded-full",
-                                mailbox.status === 'active' ? "bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.5)]" : "bg-zinc-600"
-                              )} />
-                              <span className="text-xs font-medium text-zinc-500 uppercase tracking-wider">
-                                {mailbox.project || 'Sans projet'}
-                              </span>
+                <>
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                    <AnimatePresence mode="popLayout">
+                      {filteredMailboxes.map((mailbox) => (
+                        <motion.div
+                          key={mailbox.id}
+                          layout
+                          initial={{ opacity: 0, scale: 0.9 }}
+                          animate={{ opacity: 1, scale: 1 }}
+                          exit={{ opacity: 0, scale: 0.9 }}
+                          className="group bg-[#0f0f0f] border border-zinc-800/50 rounded-2xl p-5 hover:border-orange-500/30 transition-all hover:shadow-2xl hover:shadow-orange-500/5"
+                        >
+                          <div className="flex justify-between items-start mb-4">
+                            <div className="space-y-1">
+                              <div className="flex items-center gap-2">
+                                <span className={cn(
+                                  "w-2 h-2 rounded-full",
+                                  mailbox.status === 'active' ? "bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.5)]" : "bg-zinc-600"
+                                )} />
+                                <span className="text-xs font-medium text-zinc-500 uppercase tracking-wider">
+                                  {mailbox.project || 'Sans projet'}
+                                </span>
+                              </div>
+                              <h3 className="font-bold text-lg">{mailbox.label}</h3>
                             </div>
-                            <h3 className="font-bold text-lg">{mailbox.label}</h3>
-                          </div>
-                          <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                            <button 
-                              onClick={() => toggleStatus(mailbox.id, mailbox.status)}
-                              className="p-2 hover:bg-zinc-800 rounded-lg text-zinc-500 transition-colors"
-                              title={mailbox.status === 'active' ? 'Désactiver' : 'Activer'}
-                            >
-                              {mailbox.status === 'active' ? <Power className="w-4 h-4" /> : <PowerOff className="w-4 h-4" />}
-                            </button>
-                            <button 
-                              onClick={() => removeMailbox(mailbox.id)}
-                              className="p-2 hover:bg-red-500/10 hover:text-red-400 rounded-lg text-zinc-500 transition-colors"
-                              title="Supprimer"
-                            >
-                              <Trash2 className="w-4 h-4" />
-                            </button>
-                          </div>
-                        </div>
-
-                        <div className="bg-zinc-900/50 rounded-xl p-3 border border-zinc-800/50 flex items-center justify-between group/addr">
-                          <code className="text-sm text-orange-500 font-mono truncate mr-2">
-                            {mailbox.address}
-                          </code>
-                          <div className="flex items-center gap-1">
-                            <button 
-                              onClick={() => setSelectedMailboxId(mailbox.id)}
-                              className="p-1.5 hover:bg-zinc-800 rounded-md text-zinc-500 hover:text-orange-500 transition-colors shrink-0"
-                              title="Voir les messages"
-                            >
-                              <Inbox className="w-4 h-4" />
-                            </button>
-                            {mailbox.playStoreUrl && (
+                            <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
                               <button 
-                                onClick={() => {
-                                  setSelectedMailboxId(mailbox.id);
-                                  setActiveInboxTab('simulation');
-                                }}
-                                className={cn(
-                                  "p-1.5 hover:bg-zinc-800 rounded-md transition-colors shrink-0",
-                                  mailbox.appStatus === 'active' ? "text-green-500" :
-                                  mailbox.appStatus === 'installed' ? "text-blue-500" :
-                                  mailbox.appStatus === 'installing' ? "text-orange-500 animate-pulse" :
-                                  "text-zinc-500 hover:text-orange-500"
-                                )}
-                                title={`App Status: ${mailbox.appStatus || 'idle'}`}
+                                onClick={() => toggleStatus(mailbox.id, mailbox.status)}
+                                className="p-2 hover:bg-zinc-800 rounded-lg text-zinc-500 transition-colors"
+                                title={mailbox.status === 'active' ? 'Désactiver' : 'Activer'}
                               >
-                                <Smartphone className="w-4 h-4" />
+                                {mailbox.status === 'active' ? <Power className="w-4 h-4" /> : <PowerOff className="w-4 h-4" />}
                               </button>
-                            )}
-                            {mailbox.targetUrl && (
-                              <a 
-                                href={mailbox.targetUrl} 
-                                target="_blank" 
-                                rel="noopener noreferrer"
+                              <button 
+                                onClick={() => removeMailbox(mailbox.id)}
+                                className="p-2 hover:bg-red-500/10 hover:text-red-400 rounded-lg text-zinc-500 transition-colors"
+                                title="Supprimer"
+                              >
+                                <Trash2 className="w-4 h-4" />
+                              </button>
+                            </div>
+                          </div>
+
+                          <div className="bg-zinc-900/50 rounded-xl p-3 border border-zinc-800/50 flex items-center justify-between group/addr">
+                            <div className="flex items-center gap-2 min-w-0">
+                              <code className="text-sm text-orange-500 font-mono truncate">
+                                {mailbox.address}
+                              </code>
+                              <div className="group/mx relative shrink-0">
+                                <div className={cn(
+                                  "w-1.5 h-1.5 rounded-full",
+                                  domains.some(d => mailbox.address.endsWith(`@${d.name}`) && d.status === 'active') || 
+                                  mailbox.address.includes('tech-solutions.pro') || 
+                                  mailbox.address.includes('global-corp.net') 
+                                    ? "bg-green-500 shadow-[0_0_5px_rgba(34,197,94,0.5)]" 
+                                    : "bg-yellow-500/50"
+                                )} />
+                                <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-2 py-1 bg-zinc-800 text-[10px] rounded opacity-0 group-hover/mx:opacity-100 transition-opacity whitespace-nowrap pointer-events-none border border-zinc-700 z-50">
+                                  {domains.some(d => mailbox.address.endsWith(`@${d.name}`) && d.status === 'active') || 
+                                   mailbox.address.includes('tech-solutions.pro') || 
+                                   mailbox.address.includes('global-corp.net') 
+                                    ? "MX Configuré (Réel)" 
+                                    : "Simulation DNS"}
+                                </div>
+                              </div>
+                            </div>
+                            <div className="flex items-center gap-1">
+                              <button 
+                                onClick={() => setSelectedMailboxId(mailbox.id)}
                                 className="p-1.5 hover:bg-zinc-800 rounded-md text-zinc-500 hover:text-orange-500 transition-colors shrink-0"
-                                title="Lancer l'application"
+                                title="Voir les messages"
+                              >
+                                <Inbox className="w-4 h-4" />
+                              </button>
+                              {mailbox.playStoreUrl && (
+                                <button 
+                                  onClick={() => {
+                                    setSelectedMailboxId(mailbox.id);
+                                    setActiveInboxTab('simulation');
+                                  }}
+                                  className={cn(
+                                    "p-1.5 hover:bg-zinc-800 rounded-md transition-colors shrink-0",
+                                    mailbox.appStatus === 'active' ? "text-green-500" :
+                                    mailbox.appStatus === 'installed' ? "text-blue-500" :
+                                    mailbox.appStatus === 'installing' ? "text-orange-500 animate-pulse" :
+                                    "text-zinc-500 hover:text-orange-500"
+                                  )}
+                                  title={`App Status: ${mailbox.appStatus || 'idle'}`}
+                                >
+                                  <Smartphone className="w-4 h-4" />
+                                </button>
+                              )}
+                              {mailbox.targetUrl && (
+                                <a 
+                                  href={mailbox.targetUrl} 
+                                  target="_blank" 
+                                  rel="noopener noreferrer"
+                                  className="p-1.5 hover:bg-zinc-800 rounded-md text-zinc-500 hover:text-orange-500 transition-colors shrink-0"
+                                  title="Lancer l'application"
+                                >
+                                  <ExternalLink className="w-4 h-4" />
+                                </a>
+                              )}
+                              <button 
+                                onClick={() => copyToClipboard(mailbox.address, mailbox.id)}
+                                className="p-1.5 hover:bg-zinc-800 rounded-md text-zinc-500 transition-colors shrink-0"
+                              >
+                                {copiedId === mailbox.id ? <CheckCircle2 className="w-4 h-4 text-green-500" /> : <Copy className="w-4 h-4" />}
+                              </button>
+                            </div>
+                          </div>
+
+                          {mailbox.notes && (
+                            <p className="mt-3 text-xs text-zinc-500 italic line-clamp-2">
+                              "{mailbox.notes}"
+                            </p>
+                          )}
+
+                          <div className="mt-4 pt-4 border-t border-zinc-800/50 flex items-center justify-between text-xs text-zinc-500">
+                            <span>Créé le {mailbox.createdAt?.seconds ? format(new Date(mailbox.createdAt.seconds * 1000), 'dd/MM/yyyy') : '...'}</span>
+                            <div className="flex items-center gap-1">
+                              <Inbox className="w-3 h-3" />
+                              <span>0 messages</span>
+                            </div>
+                          </div>
+                        </motion.div>
+                      ))}
+                    </AnimatePresence>
+                  </div>
+
+                  {!selectedProject && !selectedMailboxId && globalActivities.length > 0 && (
+                    <div className="mt-12 space-y-6">
+                      <div className="flex items-center justify-between">
+                        <h3 className="text-lg font-bold flex items-center gap-2">
+                          <ActivityIcon className="w-5 h-5 text-orange-500" />
+                          Flux d'activité global
+                        </h3>
+                        <button className="text-xs text-zinc-500 hover:text-zinc-300 transition-colors">Voir tout l'historique</button>
+                      </div>
+                      <div className="bg-[#0f0f0f] border border-zinc-800/50 rounded-2xl overflow-hidden">
+                        <div className="divide-y divide-zinc-800/50">
+                          {globalActivities.slice(0, 5).map((activity) => (
+                            <div key={activity.id} className="p-4 flex items-center gap-4 hover:bg-zinc-900/50 transition-colors group">
+                              <div className={cn(
+                                "w-10 h-10 rounded-xl flex items-center justify-center border border-zinc-800 shrink-0",
+                                activity.type === 'install' ? "bg-blue-500/10 text-blue-400" :
+                                activity.type === 'login' ? "bg-green-500/10 text-green-400" :
+                                activity.type === 'action' ? "bg-orange-500/10 text-orange-400" :
+                                "bg-red-500/10 text-red-400"
+                              )}>
+                                {activity.type === 'install' ? <Smartphone className="w-5 h-5" /> :
+                                 activity.type === 'login' ? <UserCheck className="w-5 h-5" /> :
+                                 activity.type === 'action' ? <ActivityIcon className="w-5 h-5" /> :
+                                 <PowerOff className="w-5 h-5" />}
+                              </div>
+                              <div className="flex-1 min-w-0">
+                                <div className="flex items-center justify-between gap-2">
+                                  <p className="text-sm font-medium text-zinc-200">
+                                    {activity.actionName || activity.type.charAt(0).toUpperCase() + activity.type.slice(1)}
+                                  </p>
+                                  <span className="text-[10px] text-zinc-500 whitespace-nowrap">
+                                    {activity.timestamp?.seconds ? format(new Date(activity.timestamp.seconds * 1000), 'HH:mm') : '...'}
+                                  </span>
+                                </div>
+                                <p className="text-xs text-zinc-500 truncate">
+                                  {activity.details || `Action effectuée sur la mailbox ${activity.mailboxId.slice(0, 8)}...`}
+                                </p>
+                              </div>
+                              <button 
+                                onClick={() => setSelectedMailboxId(activity.mailboxId)}
+                                className="p-2 opacity-0 group-hover:opacity-100 transition-opacity hover:bg-zinc-800 rounded-lg text-zinc-500"
                               >
                                 <ExternalLink className="w-4 h-4" />
-                              </a>
-                            )}
-                            <button 
-                              onClick={() => copyToClipboard(mailbox.address, mailbox.id)}
-                              className="p-1.5 hover:bg-zinc-800 rounded-md text-zinc-500 transition-colors shrink-0"
-                            >
-                              {copiedId === mailbox.id ? <CheckCircle2 className="w-4 h-4 text-green-500" /> : <Copy className="w-4 h-4" />}
-                            </button>
-                          </div>
+                              </button>
+                            </div>
+                          ))}
                         </div>
-
-                        {mailbox.notes && (
-                          <p className="mt-3 text-xs text-zinc-500 italic line-clamp-2">
-                            "{mailbox.notes}"
-                          </p>
-                        )}
-
-                        <div className="mt-4 pt-4 border-t border-zinc-800/50 flex items-center justify-between text-xs text-zinc-500">
-                          <span>Créé le {mailbox.createdAt?.seconds ? format(new Date(mailbox.createdAt.seconds * 1000), 'dd/MM/yyyy') : '...'}</span>
-                          <div className="flex items-center gap-1">
-                            <Inbox className="w-3 h-3" />
-                            <span>0 messages</span>
-                          </div>
-                        </div>
-                      </motion.div>
-                    ))}
-                  </AnimatePresence>
-                </div>
+                      </div>
+                    </div>
+                  )}
+                </>
               )}
             </div>
           </>
+        ) : activeTab === 'infrastructure' ? (
+          <div className="p-12 max-w-5xl mx-auto space-y-12">
+            <div className="flex items-center justify-between">
+              <div className="space-y-2">
+                <h2 className="text-4xl font-bold tracking-tight">Infrastructure DNS</h2>
+                <p className="text-zinc-400 text-lg">Gérez vos domaines réels et assurez-vous qu'ils passent les tests MX/SPF.</p>
+              </div>
+              <div className="flex gap-4">
+                <form onSubmit={handleDomainSearch} className="relative">
+                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-500" />
+                  <input 
+                    type="text" 
+                    placeholder="Rechercher un domaine..." 
+                    value={domainSearchQuery}
+                    onChange={(e) => setDomainSearchQuery(e.target.value)}
+                    className="bg-zinc-900 border border-zinc-800 rounded-xl pl-10 pr-4 py-3 text-sm focus:outline-none focus:border-orange-500/50 transition-all w-64"
+                  />
+                </form>
+                <button 
+                  onClick={handleDomainSearch}
+                  disabled={isSearching}
+                  className="bg-orange-500 hover:bg-orange-600 text-white px-6 py-3 rounded-xl font-bold flex items-center gap-2 transition-all shadow-lg shadow-orange-500/20 disabled:opacity-50"
+                >
+                  {isSearching ? <Loader2 className="w-5 h-5 animate-spin" /> : <Plus className="w-5 h-5" />}
+                  Acheter un domaine "Fresh"
+                </button>
+              </div>
+            </div>
+
+            {searchResults.length > 0 && (
+              <motion.div 
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+                className="bg-zinc-900/50 border border-zinc-800 rounded-2xl p-6 space-y-4"
+              >
+                <h3 className="font-bold text-lg">Résultats de recherche</h3>
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                  {searchResults.map((res) => (
+                    <div key={res.name} className="bg-black border border-zinc-800 rounded-xl p-4 flex items-center justify-between">
+                      <div className="space-y-1">
+                        <div className="font-bold">{res.name}</div>
+                        <div className="text-xs text-zinc-500">{res.price}€ / an</div>
+                      </div>
+                      <button 
+                        onClick={() => handleBuyDomain(res.name)}
+                        disabled={!res.available || !!isBuying}
+                        className={cn(
+                          "px-4 py-2 rounded-lg text-xs font-bold transition-all",
+                          res.available ? "bg-orange-500 hover:bg-orange-600 text-white" : "bg-zinc-800 text-zinc-500 cursor-not-allowed"
+                        )}
+                      >
+                        {isBuying === res.name ? <Loader2 className="w-4 h-4 animate-spin" /> : res.available ? 'Acheter' : 'Indisponible'}
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </motion.div>
+            )}
+
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+              {/* Domain List */}
+              <div className="lg:col-span-2 space-y-6">
+                <div className="bg-zinc-900/50 border border-zinc-800 rounded-2xl overflow-hidden">
+                  <table className="w-full text-left text-sm">
+                    <thead className="bg-zinc-800/50 text-zinc-500 uppercase text-[10px] font-bold tracking-widest">
+                      <tr>
+                        <th className="px-6 py-4">Domaine</th>
+                        <th className="px-6 py-4">Status MX</th>
+                        <th className="px-6 py-4">Reputation</th>
+                        <th className="px-6 py-4">Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-zinc-800">
+                      {domains.map((d) => (
+                        <tr key={d.id} className="hover:bg-zinc-800/30 transition-colors">
+                          <td className="px-6 py-4">
+                            <div className="flex flex-col">
+                              <span className="font-medium">{d.name}</span>
+                              {d.isAutomated && (
+                                <span className="text-[9px] text-orange-500 font-bold uppercase flex items-center gap-1">
+                                  <Zap className="w-2 h-2" />
+                                  Automatisé via {d.dnsProvider}
+                                </span>
+                              )}
+                            </div>
+                          </td>
+                          <td className="px-6 py-4">
+                            <div className="flex items-center gap-2">
+                              <div className={cn("w-2 h-2 rounded-full", d.status === 'active' ? "bg-green-500" : "bg-red-500")} />
+                              <span className={d.status === 'active' ? "text-green-500" : "text-red-500"}>
+                                {d.status === 'active' ? 'Configuré' : d.status === 'pending' ? 'En attente' : 'Erreur'}
+                              </span>
+                            </div>
+                          </td>
+                          <td className="px-6 py-4">
+                            <span className={cn(
+                              "px-2 py-0.5 rounded text-[10px] font-bold uppercase",
+                              d.reputation === 'High' ? "bg-green-500/10 text-green-500" : 
+                              d.reputation === 'Medium' ? "bg-yellow-500/10 text-yellow-500" : "bg-zinc-800 text-zinc-500"
+                            )}>{d.reputation}</span>
+                          </td>
+                          <td className="px-6 py-4">
+                            <div className="flex items-center gap-3">
+                              {!d.isAutomated && (
+                                <button 
+                                  onClick={() => handleAutomateDNS(d.id, d.name)}
+                                  disabled={!!isAutomating || !!isConfiguringDNS}
+                                  className="text-white bg-orange-500/20 hover:bg-orange-500/40 px-2 py-1 rounded text-xs font-bold transition-all flex items-center gap-1"
+                                >
+                                  {isAutomating === d.id || isConfiguringDNS === d.id ? <Loader2 className="w-3 h-3 animate-spin" /> : <Zap className="w-3 h-3" />}
+                                  Automatiser
+                                </button>
+                              )}
+                              <button 
+                                onClick={() => handleCheckDomainStatus(d)}
+                                className="text-orange-500 hover:underline font-medium"
+                              >
+                                Vérifier
+                              </button>
+                              <button 
+                                onClick={() => deleteDomain(d.id)}
+                                className="text-red-500/50 hover:text-red-500 transition-colors"
+                              >
+                                <Trash2 className="w-4 h-4" />
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      ))}
+                      {domains.length === 0 && !domainsLoading && (
+                        <tr>
+                          <td colSpan={4} className="px-6 py-12 text-center text-zinc-500 italic">
+                            Aucun domaine réel configuré. Recherchez un domaine pour commencer.
+                          </td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+
+                <div className="p-6 bg-orange-500/5 border border-orange-500/10 rounded-2xl flex gap-4">
+                  <ShieldCheck className="w-6 h-6 text-orange-500 shrink-0" />
+                  <div className="space-y-1">
+                    <h4 className="font-bold text-sm">Pourquoi le MX est-il crucial ?</h4>
+                    <p className="text-xs text-zinc-500 leading-relaxed">
+                      Les plateformes comme Google ou Facebook vérifient l'existence d'un serveur mail via le DNS. Si votre domaine n'a pas d'enregistrement MX, l'adresse est considérée comme "morte" ou frauduleuse.
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              {/* Setup Guide */}
+              <div className="space-y-6">
+                <div className="bg-[#0f0f0f] border border-zinc-800 rounded-2xl p-6 space-y-6">
+                  <h3 className="font-bold flex items-center gap-2">
+                    <Settings className="w-4 h-4 text-orange-500" />
+                    Automatisation DNS (Wildcard)
+                  </h3>
+                  <div className="p-4 bg-blue-500/5 border border-blue-500/10 rounded-xl space-y-2">
+                    <div className="flex items-center gap-2 text-blue-400 font-bold text-xs">
+                      <Bot className="w-4 h-4" />
+                      CONSEIL D'EXPERT
+                    </div>
+                    <p className="text-[10px] text-zinc-400 leading-relaxed">
+                      Pour éviter de configurer le DNS pour chaque adresse, utilisez un <span className="text-white font-bold">Wildcard MX (*)</span>. 
+                      Cela permet à votre domaine de recevoir des mails pour <span className="italic">n'importe quel</span> préfixe (ex: anything@votre-domaine.com) avec une seule configuration.
+                    </p>
+                  </div>
+                  <div className="space-y-4">
+                    <div className="space-y-2">
+                      <label className="text-[10px] font-bold text-zinc-600 uppercase">Type: MX (Wildcard)</label>
+                      <div className="bg-black p-3 rounded-xl border border-zinc-800 font-mono text-[10px] text-orange-500 flex justify-between items-center">
+                        <span>* (ou @) {"->"} mx.devmail.hub</span>
+                        <Copy className="w-3 h-3 text-zinc-700" />
+                      </div>
+                    </div>
+                  </div>
+                  <div className="pt-4 border-t border-zinc-800">
+                    {!isCfConnected ? (
+                      <button 
+                        onClick={fetchCloudflareZones}
+                        disabled={isCFLoading}
+                        className="w-full py-3 bg-zinc-800 hover:bg-zinc-700 text-white rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-2 disabled:opacity-50"
+                      >
+                        {isCFLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Share2 className="w-4 h-4" />}
+                        Connecter Cloudflare API
+                      </button>
+                    ) : (
+                      <div className="space-y-3">
+                        <div className="flex items-center justify-between">
+                          <span className="text-[10px] font-bold text-green-500 uppercase flex items-center gap-1">
+                            <CheckCircle2 className="w-3 h-3" />
+                            Connecté
+                          </span>
+                          <button onClick={() => setIsCfConnected(false)} className="text-[10px] text-zinc-500 hover:text-zinc-300">Déconnecter</button>
+                        </div>
+                        <select 
+                          value={selectedCfZoneId}
+                          onChange={(e) => setSelectedCfZoneId(e.target.value)}
+                          className="w-full bg-black border border-zinc-800 rounded-xl p-2 text-xs text-zinc-300 focus:outline-none focus:border-orange-500/50"
+                        >
+                          <option value="">-- Sélectionner une Zone --</option>
+                          {cfZones.map(zone => (
+                            <option key={zone.id} value={zone.id}>{zone.name}</option>
+                          ))}
+                        </select>
+                        {selectedCfZoneId && !domains.some(d => d.name === cfZones.find(z => z.id === selectedCfZoneId)?.name) && (
+                          <button 
+                            onClick={handleImportCfZone}
+                            disabled={isCFLoading}
+                            className="w-full py-2 bg-orange-500 hover:bg-orange-600 text-white rounded-lg text-[10px] font-bold transition-all flex items-center justify-center gap-2"
+                          >
+                            {isCFLoading ? <Loader2 className="w-3 h-3 animate-spin" /> : <DownloadCloud className="w-3 h-3" />}
+                            Importer & Configurer ce domaine
+                          </button>
+                        )}
+                        {cfError && <p className="text-[10px] text-red-500">{cfError}</p>}
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                <div className="bg-zinc-900/50 border border-zinc-800 rounded-2xl p-6 space-y-4">
+                  <h3 className="font-bold text-sm">Achat Automatisé</h3>
+                  <p className="text-xs text-zinc-500">Bientôt : Achetez des domaines .com ou .net directement ici. Ils seront pré-configurés et prêts à l'emploi en 60 secondes.</p>
+                  <div className="flex items-center gap-2 text-[10px] text-orange-500 font-bold">
+                    <Zap className="w-3 h-3" />
+                    INTÉGRATION CLOUDFLARE API
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        ) : activeTab === 'simulation' ? (
+          <div className="p-12 max-w-6xl mx-auto space-y-12">
+            <div className="flex items-center justify-between">
+              <div className="space-y-2">
+                <h2 className="text-4xl font-bold tracking-tight">Live App Simulation</h2>
+                <p className="text-zinc-400 text-lg">Visualisez l'état de vos applications et simulez des flux utilisateurs complexes.</p>
+              </div>
+              <div className="flex items-center gap-3 bg-zinc-900/50 border border-zinc-800 p-2 rounded-xl">
+                <div className="flex items-center gap-2 px-3 py-1 bg-green-500/10 text-green-500 rounded-lg text-xs font-bold">
+                  <div className="w-1.5 h-1.5 bg-green-500 rounded-full animate-pulse" />
+                  Système Actif
+                </div>
+                <div className="w-px h-4 bg-zinc-800" />
+                <div className="text-xs text-zinc-500 px-2">
+                  <span className="text-white font-bold">{mailboxes.filter(m => m.appStatus === 'active').length}</span> Apps Actives
+                </div>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 lg:grid-cols-4 gap-8">
+              <div className="lg:col-span-3 space-y-6">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                  {mailboxes.filter(m => m.packageName).map(m => (
+                    <motion.div 
+                      key={m.id}
+                      layoutId={m.id}
+                      className="bg-zinc-900/50 border border-zinc-800 rounded-2xl p-6 space-y-4 hover:border-orange-500/30 transition-all group"
+                    >
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-3">
+                          <div className="w-12 h-12 bg-black rounded-xl border border-zinc-800 flex items-center justify-center group-hover:scale-110 transition-transform">
+                            <Smartphone className="w-6 h-6 text-orange-500" />
+                          </div>
+                          <div>
+                            <h4 className="font-bold">{m.label}</h4>
+                            <p className="text-[10px] text-zinc-500 font-mono">{m.packageName}</p>
+                          </div>
+                        </div>
+                        <div className={cn(
+                          "px-2 py-1 rounded text-[10px] font-bold uppercase",
+                          m.appStatus === 'active' ? "bg-green-500/10 text-green-500" :
+                          m.appStatus === 'installing' ? "bg-blue-500/10 text-blue-500" :
+                          m.appStatus === 'installed' ? "bg-purple-500/10 text-purple-500" : "bg-zinc-800 text-zinc-500"
+                        )}>
+                          {m.appStatus || 'idle'}
+                        </div>
+                      </div>
+
+                      <div className="space-y-3">
+                        <div className="flex items-center justify-between text-xs">
+                          <span className="text-zinc-500">Progression du test</span>
+                          <span className="text-orange-500 font-bold">75%</span>
+                        </div>
+                        <div className="h-1.5 bg-black rounded-full overflow-hidden">
+                          <motion.div 
+                            initial={{ width: 0 }}
+                            animate={{ width: '75%' }}
+                            className="h-full bg-orange-500 shadow-[0_0_10px_rgba(249,115,22,0.5)]"
+                          />
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-2 pt-2">
+                        <button 
+                          onClick={() => setSelectedMailboxId(m.id)}
+                          className="flex-1 py-2 bg-zinc-800 hover:bg-zinc-700 text-white rounded-lg text-[10px] font-bold transition-all"
+                        >
+                          Détails Logs
+                        </button>
+                        <button 
+                          onClick={() => handleSimulateScenario('signup')}
+                          className="px-3 py-2 bg-orange-500/10 hover:bg-orange-500/20 text-orange-500 rounded-lg transition-all"
+                        >
+                          <Play className="w-4 h-4" />
+                        </button>
+                      </div>
+                    </motion.div>
+                  ))}
+                  {mailboxes.filter(m => m.packageName).length === 0 && (
+                    <div className="col-span-2 py-20 text-center space-y-4 bg-zinc-900/30 border border-dashed border-zinc-800 rounded-3xl">
+                      <div className="w-16 h-16 bg-zinc-800/50 rounded-full flex items-center justify-center mx-auto">
+                        <Smartphone className="w-8 h-8 text-zinc-600" />
+                      </div>
+                      <div className="space-y-1">
+                        <p className="text-zinc-400 font-medium">Aucune application en simulation</p>
+                        <p className="text-xs text-zinc-600">Créez une adresse avec un Package Name pour commencer.</p>
+                      </div>
+                      <button 
+                        onClick={() => setIsModalOpen(true)}
+                        className="text-orange-500 text-sm font-bold hover:underline"
+                      >
+                        Créer ma première simulation
+                      </button>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              <div className="space-y-6">
+                <div className="bg-zinc-900/50 border border-zinc-800 rounded-2xl p-6 space-y-6">
+                  <h3 className="font-bold flex items-center gap-2">
+                    <Zap className="w-4 h-4 text-orange-500" />
+                    Scénarios de Test
+                  </h3>
+                  <div className="space-y-3">
+                    {[
+                      { id: 'signup', name: 'Inscription Complète', desc: 'Simule l\'installation, l\'ouverture et l\'inscription.', icon: UserCheck },
+                      { id: 'reset', name: 'Password Reset', desc: 'Simule la demande de reset et le clic sur le lien.', icon: Clock },
+                      { id: 'purchase', name: 'In-App Purchase', desc: 'Simule un achat et la réception du reçu.', icon: Share2 },
+                    ].map(s => (
+                      <button 
+                        key={s.id}
+                        className="w-full text-left p-4 bg-black border border-zinc-800 rounded-xl hover:border-orange-500/50 transition-all group"
+                      >
+                        <div className="flex items-center gap-3 mb-2">
+                          <div className="p-2 bg-zinc-900 rounded-lg text-zinc-500 group-hover:text-orange-500 transition-colors">
+                            <s.icon className="w-4 h-4" />
+                          </div>
+                          <span className="font-bold text-sm">{s.name}</span>
+                        </div>
+                        <p className="text-[10px] text-zinc-500 leading-relaxed">{s.desc}</p>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="p-6 bg-blue-500/5 border border-blue-500/10 rounded-2xl space-y-3">
+                  <div className="flex items-center gap-2 text-blue-400 font-bold text-xs">
+                    <Bot className="w-4 h-4" />
+                    IA Auto-Pilot
+                  </div>
+                  <p className="text-[10px] text-zinc-500 leading-relaxed">
+                    L'Auto-Pilot peut détecter automatiquement les liens de confirmation et les valider sans intervention humaine.
+                  </p>
+                  <button className="w-full py-2 bg-blue-500/20 hover:bg-blue-500/30 text-blue-400 rounded-lg text-[10px] font-bold transition-all">
+                    Activer Globalement
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
         ) : activeTab === 'extension' ? (
           <div className="p-12 max-w-4xl mx-auto space-y-12">
             <div className="space-y-4">
@@ -770,6 +1543,94 @@ response = requests.post(
                   <p className="text-xs text-orange-500/80 leading-relaxed">
                     <span className="font-bold">Attention :</span> Ne partagez jamais votre clé API. Elle donne un accès complet à vos mailboxes et messages.
                   </p>
+                </div>
+              </div>
+
+              {/* Webhook Debugger Section */}
+              <div className="bg-zinc-900/50 border border-zinc-800 rounded-2xl p-6 space-y-6">
+                <div className="flex items-center justify-between">
+                  <div className="space-y-1">
+                    <h3 className="text-xl font-bold">Webhook Debugger</h3>
+                    <p className="text-sm text-zinc-500">Testez vos webhooks en temps réel et visualisez les payloads envoyés.</p>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse" />
+                    <span className="text-[10px] font-bold text-green-500 uppercase">Live</span>
+                  </div>
+                </div>
+
+                <div className="flex gap-3">
+                  <input 
+                    type="text" 
+                    placeholder="https://votre-api.com/webhooks/mail"
+                    value={testWebhookUrl}
+                    onChange={(e) => setTestWebhookUrl(e.target.value)}
+                    className="flex-1 bg-black border border-zinc-800 rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-orange-500/50 transition-all"
+                  />
+                  <button 
+                    onClick={async () => {
+                      if (!testWebhookUrl) return;
+                      setIsTestingWebhook(true);
+                      // Simulation d'envoi de webhook
+                      const payload = {
+                        event: 'message.received',
+                        mailbox: 'test-mailbox@devmail.hub',
+                        subject: 'Test Webhook Debugger',
+                        timestamp: new Date().toISOString()
+                      };
+                      
+                      try {
+                        // On simule un délai
+                        await new Promise(r => setTimeout(r, 1000));
+                        setWebhookLogs(prev => [{
+                          id: Math.random().toString(36).substr(2, 9),
+                          timestamp: new Date(),
+                          url: testWebhookUrl,
+                          payload,
+                          status: 'success' as const
+                        }, ...prev].slice(0, 5));
+                      } finally {
+                        setIsTestingWebhook(false);
+                      }
+                    }}
+                    disabled={isTestingWebhook || !testWebhookUrl}
+                    className="px-6 py-3 bg-orange-500 hover:bg-orange-600 text-white rounded-xl font-bold transition-all disabled:opacity-50 flex items-center gap-2"
+                  >
+                    {isTestingWebhook ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
+                    Tester
+                  </button>
+                </div>
+
+                <div className="space-y-3">
+                  <h4 className="text-[10px] font-bold text-zinc-600 uppercase">Derniers Appels</h4>
+                  <div className="space-y-2">
+                    {webhookLogs.map(log => (
+                      <div key={log.id} className="bg-black border border-zinc-800 rounded-xl p-4 space-y-3">
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-3">
+                            <span className={cn(
+                              "px-2 py-0.5 rounded text-[10px] font-bold uppercase",
+                              log.status === 'success' ? "bg-green-500/10 text-green-500" : "bg-red-500/10 text-red-500"
+                            )}>
+                              {log.status === 'success' ? '200 OK' : 'Error'}
+                            </span>
+                            <span className="text-[10px] text-zinc-500 font-mono">{format(log.timestamp, 'HH:mm:ss')}</span>
+                          </div>
+                          <span className="text-[10px] text-zinc-600 truncate max-w-[200px]">{log.url}</span>
+                        </div>
+                        <div className="bg-zinc-900/50 p-3 rounded-lg border border-zinc-800">
+                          <pre className="text-[10px] text-zinc-400 font-mono overflow-x-auto">
+                            {JSON.stringify(log.payload, null, 2)}
+                          </pre>
+                        </div>
+                      </div>
+                    ))}
+                    {webhookLogs.length === 0 && (
+                      <div className="py-8 text-center text-zinc-600 text-xs italic border border-dashed border-zinc-800 rounded-xl">
+                        Aucun log de webhook récent.
+                      </div>
+                    )}
+                  </div>
                 </div>
               </div>
 
@@ -1291,20 +2152,46 @@ test('vérification du mail de bienvenue', async ({ page }) => {
                     <label className="text-sm font-medium text-zinc-400">Domaine de l'adresse</label>
                     <div className="relative">
                       <select 
+                        required
                         value={newDomain}
                         onChange={(e) => setNewDomain(e.target.value)}
                         className="w-full bg-zinc-900 border border-zinc-800 rounded-xl p-3 focus:outline-none focus:border-orange-500/50 transition-all text-sm appearance-none cursor-pointer"
                       >
-                        <option value="gmail-verify.com">gmail-verify.com (Recommandé)</option>
-                        <option value="outlook-test.net">outlook-test.net</option>
-                        <option value="mbox-pro.io">mbox-pro.io</option>
-                        <option value="user-mail.org">user-mail.org</option>
-                        <option value="cloud-verify.me">cloud-verify.me</option>
+                        <option value="" disabled>-- Sélectionner un domaine --</option>
+                        {domains.map(d => (
+                          <option key={d.id} value={d.name}>{d.name} {d.status === 'active' ? '✓' : '⚠'}</option>
+                        ))}
                       </select>
                       <ChevronRight className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-500 pointer-events-none rotate-90" />
                     </div>
+                    {domains.length === 0 ? (
+                      <p className="text-[10px] text-red-500 mt-1">
+                        Aucun domaine configuré. Allez dans l'onglet Infrastructure pour connecter Cloudflare.
+                      </p>
+                    ) : (
+                      <p className="text-[10px] text-zinc-500 mt-1">
+                        {domains.length} domaine(s) disponible(s).
+                      </p>
+                    )}
                   </div>
                 </div>
+
+                {isCfConnected && selectedCfZoneId && domains.some(d => d.name === newDomain) && (
+                  <div className="flex items-center gap-2 p-3 bg-orange-500/5 border border-orange-500/10 rounded-xl">
+                    <input 
+                      type="checkbox" 
+                      id="autoSubdomain"
+                      checked={autoCreateSubdomain}
+                      onChange={(e) => setAutoCreateSubdomain(e.target.checked)}
+                      className="w-4 h-4 accent-orange-500"
+                    />
+                    <label htmlFor="autoSubdomain" className="text-xs font-medium text-zinc-400 cursor-pointer flex items-center gap-2">
+                      <Zap className="w-3 h-3 text-orange-500" />
+                      Créer automatiquement un sous-domaine Cloudflare
+                    </label>
+                  </div>
+                )}
+
                 <div className="pt-4 flex gap-3">
                   <button 
                     type="button"

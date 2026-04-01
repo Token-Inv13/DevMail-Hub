@@ -58,6 +58,21 @@ service cloud.firestore {
     //   - receivedAt: timestamp (required)
     //   - isRead: bool (optional)
     //
+    // Collection: domains
+    // Document ID: domainId
+    // Fields:
+    //   - id: string (required)
+    //   - userId: string (required)
+    //   - name: string (required)
+    //   - status: string (required, enum: pending, active, error)
+    //   - mxValid: bool (optional)
+    //   - spfValid: bool (optional)
+    //   - dkimValid: bool (optional)
+    //   - reputation: string (optional, enum: High, Medium, Low, None)
+    //   - isAutomated: bool (optional)
+    //   - dnsProvider: string (optional, enum: cloudflare, gandi, route53)
+    //   - createdAt: timestamp (required)
+    //
     // ===============================================================
 
     // ===============================================================
@@ -133,6 +148,20 @@ service cloud.firestore {
              (data.receivedAt == null || data.receivedAt is timestamp);
     }
 
+    function isValidDomain(data) {
+      return hasOnlyAllowedFields(['id', 'userId', 'name', 'status', 'mxValid', 'spfValid', 'dkimValid', 'reputation', 'isAutomated', 'dnsProvider', 'createdAt']) &&
+             data.userId == request.auth.uid &&
+             data.name is string &&
+             data.status in ['pending', 'active', 'error'] &&
+             (data.mxValid == null || data.mxValid is bool) &&
+             (data.spfValid == null || data.spfValid is bool) &&
+             (data.dkimValid == null || data.dkimValid is bool) &&
+             (data.reputation == null || data.reputation in ['High', 'Medium', 'Low', 'None']) &&
+             (data.isAutomated == null || data.isAutomated is bool) &&
+             (data.dnsProvider == null || data.dnsProvider in ['cloudflare', 'gandi', 'route53']) &&
+             (data.createdAt == null || data.createdAt is timestamp);
+    }
+
     // ===============================================================
     // Rules
     // ===============================================================
@@ -160,6 +189,13 @@ service cloud.firestore {
       allow read: if isDocOwner();
       allow create: if isAuthenticated() && isValidActivity(request.resource.data);
       allow update: if isDocOwner() && isValidActivity(request.resource.data);
+      allow delete: if isDocOwner();
+    }
+
+    match /domains/{domainId} {
+      allow read: if isDocOwner();
+      allow create: if isAuthenticated() && isValidDomain(request.resource.data);
+      allow update: if isDocOwner() && isValidDomain(request.resource.data);
       allow delete: if isDocOwner();
     }
   }

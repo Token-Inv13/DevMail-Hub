@@ -73,6 +73,23 @@
         "isRead": { "type": "boolean" }
       },
       "required": ["mailboxId", "from", "subject", "receivedAt"]
+    },
+    "Domain": {
+      "title": "Domain",
+      "description": "A real domain owned by the user for email testing",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "userId": { "type": "string" },
+        "name": { "type": "string" },
+        "status": { "type": "string", "enum": ["pending", "active", "error"] },
+        "mxValid": { "type": "boolean" },
+        "spfValid": { "type": "boolean" },
+        "dkimValid": { "type": "boolean" },
+        "reputation": { "type": "string", "enum": ["High", "Medium", "Low", "None"] },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "name", "status", "createdAt"]
     }
   },
   "firestore": {
@@ -91,6 +108,10 @@
     "/activities/{activityId}": {
       "schema": "Activity",
       "description": "Simulated user activities"
+    },
+    "/domains/{domainId}": {
+      "schema": "Domain",
+      "description": "User-owned real domains"
     }
   }
 }

@@ -41,8 +41,7 @@ export function useMessages(mailboxId: string | null) {
     const q = query(
       collection(db, 'messages'),
       where('mailboxId', '==', mailboxId),
-      where('userId', '==', auth.currentUser.uid),
-      orderBy('receivedAt', 'desc')
+      where('userId', '==', auth.currentUser.uid)
     );
 
     const unsubscribe = onSnapshot(q, (snapshot) => {
@@ -50,7 +49,14 @@ export function useMessages(mailboxId: string | null) {
         id: doc.id,
         ...doc.data()
       })) as Message[];
-      setMessages(list);
+      
+      const sortedList = list.sort((a, b) => {
+        const dateA = a.receivedAt?.seconds || 0;
+        const dateB = b.receivedAt?.seconds || 0;
+        return dateB - dateA;
+      });
+
+      setMessages(sortedList);
       setLoading(false);
     }, (err) => {
       console.error("Firestore Error (Messages):", err);

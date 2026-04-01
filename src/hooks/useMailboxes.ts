@@ -89,15 +89,20 @@ export function useMailboxes(user: any) {
   ) => {
     if (!auth.currentUser) return;
 
-    const domains = ['gmail-verify.com', 'outlook-test.net', 'mbox-pro.io', 'user-mail.org', 'cloud-verify.me'];
-    const prefixes = ['user', 'member', 'client', 'dev', 'qa', 'tester', 'account'];
+    const domains = ['tech-solutions.pro', 'global-corp.net', 'service-desk.io', 'staff-mail.org', 'verify-account.me', 'gmail-verify.com'];
+    const firstNames = ['john', 'jane', 'alex', 'sarah', 'mike', 'emma', 'david', 'lisa', 'tom', 'anna'];
+    const lastNames = ['smith', 'jones', 'doe', 'brown', 'wilson', 'taylor', 'clark', 'lewis', 'walker', 'hall'];
     
     const promises = [];
     for (let i = 0; i < count; i++) {
-      const randomStr = Math.random().toString(36).substring(2, 8);
-      const randomPrefix = prefixes[Math.floor(Math.random() * prefixes.length)];
+      const randomStr = Math.random().toString(36).substring(2, 6);
+      const firstName = firstNames[Math.floor(Math.random() * firstNames.length)];
+      const lastName = lastNames[Math.floor(Math.random() * lastNames.length)];
+      
       const randomDomain = domain || domains[Math.floor(Math.random() * domains.length)];
-      const address = `${randomPrefix}.${randomStr}@${randomDomain}`;
+      
+      // Create a more human-like address: john.doe.a1b2@domain.com
+      const address = `${firstName}.${lastName}.${randomStr}@${randomDomain}`;
       const finalLabel = count > 1 ? `${label} #${i + 1}` : label;
 
       promises.push(
