@@ -1,26 +1,8 @@
 import { useState, useEffect } from 'react';
-import { 
-  collection, 
-  query, 
-  where, 
-  onSnapshot, 
-  addDoc, 
-  serverTimestamp,
-  orderBy,
-  limit
-} from 'firebase/firestore';
-import { db, auth } from '../firebase';
+import { auth } from '../firebase';
 import { handleFirestoreError, OperationType } from './useAuth';
-
-export interface Activity {
-  id: string;
-  mailboxId: string;
-  userId: string;
-  type: 'install' | 'login' | 'action' | 'uninstall';
-  actionName?: string;
-  details?: string;
-  timestamp: any;
-}
+import { Activity } from '../types/activity';
+import { createActivity, subscribeActivities } from '../repositories/activities.repository';
 
 export function useActivities(mailboxId: string | null) {
   const [activities, setActivities] = useState<Activity[]>([]);
@@ -33,42 +15,21 @@ export function useActivities(mailboxId: string | null) {
     }
 
     setLoading(true);
-    let q = query(
-      collection(db, 'activities'),
-      where('userId', '==', auth.currentUser.uid),
-      limit(100)
+    const unsubscribe = subscribeActivities(
+      auth.currentUser.uid,
+      mailboxId,
+      (nextActivities) => {
+        setActivities(nextActivities);
+        setLoading(false);
+      },
+      (err) => {
+        console.error("Firestore Error (Activities):", err);
+        setLoading(false);
+        if (err.message.includes('permission')) {
+          handleFirestoreError(err, OperationType.LIST, 'activities');
+        }
+      },
     );
-
-    if (mailboxId) {
-      q = query(
-        collection(db, 'activities'),
-        where('mailboxId', '==', mailboxId),
-        where('userId', '==', auth.currentUser.uid),
-        limit(100)
-      );
-    }
-
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      const list = snapshot.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data()
-      })) as Activity[];
-      
-      const sortedList = list.sort((a, b) => {
-        const dateA = a.timestamp?.seconds || 0;
-        const dateB = b.timestamp?.seconds || 0;
-        return dateB - dateA;
-      });
-
-      setActivities(sortedList);
-      setLoading(false);
-    }, (err) => {
-      console.error("Firestore Error (Activities):", err);
-      setLoading(false);
-      if (err.message.includes('permission')) {
-        handleFirestoreError(err, OperationType.LIST, 'activities');
-      }
-    });
 
     return () => unsubscribe();
   }, [mailboxId]);
@@ -77,13 +38,12 @@ export function useActivities(mailboxId: string | null) {
     if (!mailboxId || !auth.currentUser) return;
 
     try {
-      await addDoc(collection(db, 'activities'), {
+      await createActivity({
         mailboxId,
         userId: auth.currentUser.uid,
         type,
         actionName,
         details,
-        timestamp: serverTimestamp()
       });
     } catch (err) {
       handleFirestoreError(err, OperationType.CREATE, 'activities');

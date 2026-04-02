@@ -1,30 +1,8 @@
 import { useState, useEffect } from 'react';
-import { 
-  collection, 
-  query, 
-  where, 
-  onSnapshot, 
-  addDoc, 
-  doc, 
-  serverTimestamp,
-  orderBy,
-  updateDoc
-} from 'firebase/firestore';
-import { db, auth } from '../firebase';
+import { auth } from '../firebase';
 import { handleFirestoreError, OperationType } from './useAuth';
-
-export interface Message {
-  id: string;
-  mailboxId: string;
-  userId: string;
-  from: string;
-  subject: string;
-  body: string;
-  html?: string;
-  links: string[];
-  receivedAt: any;
-  isRead: boolean;
-}
+import { Message } from '../types/message';
+import { createSimulatedMessage, markMessageAsRead, subscribeMailboxMessages } from '../repositories/messages.repository';
 
 export function useMessages(mailboxId: string | null) {
   const [messages, setMessages] = useState<Message[]>([]);
@@ -38,34 +16,22 @@ export function useMessages(mailboxId: string | null) {
     }
 
     setLoading(true);
-    const q = query(
-      collection(db, 'messages'),
-      where('mailboxId', '==', mailboxId),
-      where('userId', '==', auth.currentUser.uid)
+    const unsubscribe = subscribeMailboxMessages(
+      auth.currentUser.uid,
+      mailboxId,
+      (nextMessages) => {
+        setMessages(nextMessages);
+        setLoading(false);
+      },
+      (err) => {
+        console.error("Firestore Error (Messages):", err);
+        setError(err.message);
+        setLoading(false);
+        if (err.message.includes('permission')) {
+          handleFirestoreError(err, OperationType.LIST, 'messages');
+        }
+      },
     );
-
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      const list = snapshot.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data()
-      })) as Message[];
-      
-      const sortedList = list.sort((a, b) => {
-        const dateA = a.receivedAt?.seconds || 0;
-        const dateB = b.receivedAt?.seconds || 0;
-        return dateB - dateA;
-      });
-
-      setMessages(sortedList);
-      setLoading(false);
-    }, (err) => {
-      console.error("Firestore Error (Messages):", err);
-      setError(err.message);
-      setLoading(false);
-      if (err.message.includes('permission')) {
-        handleFirestoreError(err, OperationType.LIST, 'messages');
-      }
-    });
 
     return () => unsubscribe();
   }, [mailboxId]);
@@ -73,21 +39,8 @@ export function useMessages(mailboxId: string | null) {
   const simulateMessage = async (from: string, subject: string, body: string) => {
     if (!mailboxId || !auth.currentUser) return;
 
-    // Extract links from body
-    const urlRegex = /(https?:\/\/[^\s]+)/g;
-    const links = body.match(urlRegex) || [];
-
     try {
-      await addDoc(collection(db, 'messages'), {
-        mailboxId,
-        userId: auth.currentUser.uid,
-        from,
-        subject,
-        body,
-        links,
-        receivedAt: serverTimestamp(),
-        isRead: false
-      });
+      await createSimulatedMessage(auth.currentUser.uid, mailboxId, from, subject, body);
     } catch (err) {
       handleFirestoreError(err, OperationType.CREATE, 'messages');
     }
@@ -95,9 +48,7 @@ export function useMessages(mailboxId: string | null) {
 
   const markAsRead = async (messageId: string) => {
     try {
-      await updateDoc(doc(db, 'messages', messageId), {
-        isRead: true
-      });
+      await markMessageAsRead(messageId);
     } catch (err) {
       handleFirestoreError(err, OperationType.UPDATE, `messages/${messageId}`);
     }

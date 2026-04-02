@@ -1,31 +1,7 @@
 import { useState, useEffect } from 'react';
-import { 
-  collection, 
-  query, 
-  where, 
-  onSnapshot, 
-  addDoc, 
-  updateDoc, 
-  deleteDoc, 
-  doc, 
-  serverTimestamp,
-  orderBy
-} from 'firebase/firestore';
-import { db, auth } from '../firebase';
-
-export interface Domain {
-  id: string;
-  userId: string;
-  name: string;
-  status: 'pending' | 'active' | 'error';
-  mxValid: boolean;
-  spfValid: boolean;
-  dkimValid: boolean;
-  reputation: 'High' | 'Medium' | 'Low' | 'None';
-  isAutomated: boolean;
-  dnsProvider?: 'cloudflare' | 'gandi' | 'route53' | null;
-  createdAt: any;
-}
+import { auth } from '../firebase';
+import { Domain } from '../types/domain';
+import { createDomain, deleteDomainById, subscribeUserDomains, updateDomainById } from '../repositories/domains.repository';
 
 export const useInfrastructure = () => {
   const [domains, setDomains] = useState<Domain[]>([]);
@@ -38,30 +14,17 @@ export const useInfrastructure = () => {
       return;
     }
 
-    const q = query(
-      collection(db, 'domains'),
-      where('userId', '==', auth.currentUser.uid)
+    const unsubscribe = subscribeUserDomains(
+      auth.currentUser.uid,
+      (domainList) => {
+        setDomains(domainList);
+        setLoading(false);
+      },
+      (error) => {
+        console.error("Infrastructure Hook: Firestore Error:", error);
+        setLoading(false);
+      },
     );
-
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      const list = snapshot.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data()
-      })) as Domain[];
-      
-      const domainList = list.sort((a, b) => {
-        const dateA = a.createdAt?.seconds || 0;
-        const dateB = b.createdAt?.seconds || 0;
-        return dateB - dateA;
-      });
-
-      console.log("Infrastructure Hook: Loaded domains:", domainList.length);
-      setDomains(domainList);
-      setLoading(false);
-    }, (error) => {
-      console.error("Infrastructure Hook: Firestore Error:", error);
-      setLoading(false);
-    });
 
     return () => unsubscribe();
   }, []);
@@ -73,21 +36,8 @@ export const useInfrastructure = () => {
     }
 
     try {
-      console.log("Infrastructure Hook: Adding domain:", name);
-      const docRef = await addDoc(collection(db, 'domains'), {
-        userId: auth.currentUser.uid,
-        name,
-        status: 'pending',
-        mxValid: false,
-        spfValid: false,
-        dkimValid: false,
-        reputation: 'None',
-        isAutomated,
-        dnsProvider,
-        createdAt: serverTimestamp()
-      });
-      console.log("Infrastructure Hook: Domain added with ID:", docRef.id);
-      return docRef.id;
+      const domainId = await createDomain(auth.currentUser.uid, name, isAutomated, dnsProvider);
+      return domainId;
     } catch (error) {
       console.error("Infrastructure Hook: Error adding domain:", error);
       throw error;
@@ -95,15 +45,14 @@ export const useInfrastructure = () => {
   };
 
   const deleteDomain = async (id: string) => {
-    await deleteDoc(doc(db, 'domains', id));
+    await deleteDomainById(id);
   };
 
   const checkDomainStatus = async (id: string) => {
     // Simulated MX/SPF check
-    const domainRef = doc(db, 'domains', id);
     const random = Math.random();
     
-    await updateDoc(domainRef, {
+    await updateDomainById(id, {
       mxValid: random > 0.3,
       spfValid: random > 0.5,
       status: random > 0.4 ? 'active' : 'pending',
@@ -112,12 +61,10 @@ export const useInfrastructure = () => {
   };
 
   const automateDNS = async (id: string, provider: 'cloudflare' | 'gandi' | 'route53') => {
-    const domainRef = doc(db, 'domains', id);
-    
     // Simulate API call to DNS provider
     await new Promise(resolve => setTimeout(resolve, 2000));
     
-    await updateDoc(domainRef, {
+    await updateDomainById(id, {
       isAutomated: true,
       dnsProvider: provider,
       mxValid: true,

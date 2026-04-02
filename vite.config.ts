@@ -5,6 +5,18 @@ import {defineConfig, loadEnv} from 'vite';
 
 export default defineConfig(({mode}) => {
   const env = loadEnv(mode, '.', '');
+
+  const manualChunks = (id: string) => {
+    if (!id.includes('node_modules')) return;
+
+    if (id.includes('/firebase/') || id.includes('/@firebase/')) return 'firebase';
+    if (id.includes('/recharts/')) return 'charts';
+    if (id.includes('/lucide-react/')) return 'icons';
+    if (id.includes('/date-fns/')) return 'date-utils';
+
+    return 'vendor';
+  };
+
   return {
     plugins: [react(), tailwindcss()],
     define: {
@@ -19,6 +31,13 @@ export default defineConfig(({mode}) => {
       // HMR is disabled in AI Studio via DISABLE_HMR env var.
       // Do not modifyâfile watching is disabled to prevent flickering during agent edits.
       hmr: process.env.DISABLE_HMR !== 'true',
+    },
+    build: {
+      rollupOptions: {
+        output: {
+          manualChunks,
+        },
+      },
     },
   };
 });
